@@ -107,9 +107,9 @@ function renderCards(cards = []) {
 }
 
 function renderRadar(state = {}) {
-  const lanes = state.lane_threats || [];
+  const rowCount = Math.max(1, Math.min(6, Number(state.board_rows) || (["泳池", "雾夜"].includes(state.scene) ? 6 : 5)));
+  const lanes = (state.lane_threats || []).filter(lane => lane.row >= 0 && lane.row < rowCount);
   const mowerRows = new Set((state.lawn_mowers || []).filter(mower => mower.alive).map(mower => mower.row));
-  const rowCount = Math.max(lanes.length, ["泳池", "雾夜"].includes(state.scene) ? 6 : 5);
   const zombies = state.counts?.zombies ?? state.zombies?.length ?? 0;
   $("zombieCount").textContent = zombies;
   const danger = [...lanes].sort((a,b) => (b.count || 0) - (a.count || 0) || (b.total_hp || 0) - (a.total_hp || 0))[0];
@@ -231,7 +231,9 @@ async function refresh() {
       $("sun").textContent = state.sun;
       $("wave").textContent = `${state.wave}/${state.total_wave}`;
       $("waveHint").textContent = state.game?.huge_wave_countdown > 0 ? `大波倒计时 ${state.game.huge_wave_countdown}` : "实时波次";
-      $("scene").textContent = state.scene;
+      const flow = state.flow || {};
+      const typeTag = flow.kind === "conveyor" ? " · 传送带" : flow.kind === "special" ? " · 特殊关" : "";
+      $("scene").textContent = `${state.level_label || ""}${state.level_label ? " · " : ""}${state.scene || "未知"}${typeTag}`;
       $("clock").textContent = gameClock(state.clock);
       $("plantCount").textContent = state.counts?.plants ?? state.plants?.length ?? 0;
       updateSparkline("sun", state.sun);
@@ -240,6 +242,16 @@ async function refresh() {
       updateSparkline("zombie", state.counts?.zombies ?? state.zombies?.length ?? 0);
       renderCards(state.cards);
       renderRadar(state);
+      if (status.agent.running && flow.agent_enabled === false) {
+        const waitingLabels = {
+          reward: "自动处理奖励",
+          special_level: "特殊关待机",
+          level_intro: "等待开场",
+          manual_transition: "等待手动操作",
+          lost: "等待重新开始",
+        };
+        $("agentStateText").textContent = waitingLabels[flow.phase] || "流程待机";
+      }
     } else {
       resetGameView();
     }

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from .audit import AuditLog
+from .flow import classify_flow
+from .level_scripts import available_adventure_seed_types, get_adventure_script
 from .pvz_native import PvZCodeInjector, PvZMemory, PvZStateReader
 from .pvz_native.offsets import PLANT_NAMES, PLANT_UPGRADE_MAP
 from .rules import build_board, check_placement, plant_layer
@@ -26,6 +28,10 @@ class PvZPlugin:
         self._audit = AuditLog(log_dir)
         self._auto_collect = False
         self._action_seq = 0
+        # game_ui stays at SELECT_CARD for part of the level-intro camera pan.
+        # Remember a successful submission so repeated Agent turns cannot call
+        # ChooseCard/Rock again and restart that transition over and over.
+        self._selection_submitted = False
         self._collector_stop = threading.Event()
         self._collector_thread: threading.Thread | None = None
 
@@ -51,8 +57,11 @@ class PvZPlugin:
             injector = PvZCodeInjector(memory)
             reader = PvZStateReader(memory)
             self._memory, self._injector, self._reader = memory, injector, reader
+            self._selection_submitted = False
             try:
-                injector.set_game_paused(False)
+                # Preserve a user pause. Writing only the game's pause flag does not
+                # close the visible pause dialog and can leave the lawn animating
+                # behind it.
                 # Disable the instant-collect patch. A delayed collector below keeps
                 # each item visible for a human-like amount of time.
                 injector.set_auto_collect(False)
@@ -78,6 +87,7 @@ class PvZPlugin:
                 self._memory.disconnect()
             self._memory = self._reader = self._injector = None
             self._auto_collect = False
+            self._selection_submitted = False
             self._collector_thread = None
             self.emit("connection", "disconnected")
 
@@ -97,10 +107,9 @@ class PvZPlugin:
         with self._lock:
             self._require_connected()
             assert self._memory and self._reader and self._injector
-            if self._memory.is_game_paused():
-                self._injector.set_game_paused(False)
-                self.emit("game", "forced_unpause", level="warning")
             state = self._reader.read_state()
+            if state.game_ui != 2:
+                self._selection_submitted = False
 
         cards = []
         for seed in state.seeds:
@@ -144,7 +153,8 @@ class PvZPlugin:
         mowers = [{"index": mower.index, "row": mower.row, "alive": mower.is_alive} for mower in state.lawn_mowers]
 
         lane_threats = []
-        for row in range(6):
+        board_rows = 6 if state.scene in (2, 3) else 5
+        for row in range(board_rows):
             lane = [z for z in zombies if z["row"] == row]
             lane_threats.append({
                 "row": row, "count": len(lane), "total_hp": sum(z["hp_total"] for z in lane),
@@ -179,12 +189,22 @@ class PvZPlugin:
             }
             for index, wave in enumerate(state.wave_zombies)
         ]
+        flow = classify_flow(
+            app_scene=state.game_ui,
+            game_mode=state.game_mode,
+            adventure_level=state.adventure_level,
+            background=state.scene,
+            seed_chooser_ready=state.seed_chooser_ready,
+        ).to_dict()
 
         result = {
             "schema_version": self.schema_version, "captured_at": time.time(),
             "read_duration_ms": round((time.perf_counter() - started) * 1000, 2),
             "game": {
                 "ui": state.game_ui, "mode": state.game_mode, "in_battle": state.in_battle,
+                "app_scene_id": state.game_ui, "app_scene": flow["app_scene"],
+                "level": state.adventure_level, "level_key": flow["level_key"],
+                "level_label": flow["level_label"],
                 "scene_id": state.scene, "scene": state.scene_name, "paused": state.is_paused,
                 "clock": state.game_clock, "sun": state.sun,
                 "wave": state.wave, "total_wave": state.total_wave,
@@ -195,6 +215,16 @@ class PvZPlugin:
             # Compatibility keys for the current basic frontend.
             "sun": state.sun, "wave": state.wave, "total_wave": state.total_wave,
             "scene": state.scene_name, "clock": state.game_clock, "paused": state.is_paused,
+            "level": state.adventure_level, "level_label": flow["level_label"],
+            "board_rows": board_rows, "flow": flow,
+            "seed_selection": {
+                "required_count": len(state.seeds) or 6,
+                "available_types": (
+                    available_adventure_seed_types(state.adventure_level)
+                    if state.game_mode == 0 and flow["seed_system"] == "chooser" else []
+                ),
+                "decision_owner": "ai",
+            },
             "cards": cards, "plants": plants, "zombies": zombies,
             "items": items, "grid_items": grid_items, "lawn_mowers": mowers,
             "board": build_board(state.plants), "lane_threats": lane_threats,
@@ -212,12 +242,12 @@ class PvZPlugin:
     def context_text(self, *, snapshot: bool = True) -> str:
         state = self.read_state()
         compact = {
-            "game": state["game"], "cards": state["cards"],
+            "game": state["game"], "flow": state["flow"], "cards": state["cards"],
             "occupied_cells": [cell for cell in state["board"] if not cell["empty"]],
             "zombies": state["zombies"], "items": state["items"],
             "grid_items": state["grid_items"], "lawn_mowers": state["lawn_mowers"],
             "lane_threats": state["lane_threats"], "terrain": state["terrain"],
-            "spawn_plan": state["spawn_plan"],
+            "spawn_plan": state["spawn_plan"], "seed_selection": state["seed_selection"],
         }
         text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         if snapshot:
@@ -236,7 +266,14 @@ class PvZPlugin:
         try:
             audited_actions = {"place_plant", "shovel", "fire_cob", "select_seeds"}
             if self.connected and action in audited_actions:
-                self.read_state(snapshot_reason=f"before_action:{action_id}:{action}")
+                before = self.read_state(snapshot_reason=f"before_action:{action_id}:{action}")
+                flow = before["flow"]
+                allowed_by_phase = {
+                    "seed_selection": {"select_seeds"},
+                    "battle": {"place_plant", "shovel", "fire_cob"},
+                }
+                if action not in allowed_by_phase.get(flow["phase"], set()):
+                    raise ValueError(f"当前流程“{flow['phase']}”不允许执行 {action}: {flow['reason']}")
             if action == "place_plant":
                 result = self.place_plant(int(args["card_index"]), int(args["row"]), int(args["col"]), action_id=action_id)
             elif action == "shovel":
@@ -424,19 +461,86 @@ class PvZPlugin:
             raise ValueError("seeds 必须是 1~10 个 0~47 的植物类型")
         with self._lock:
             self._require_connected()
-            assert self._reader and self._injector
-            if self._reader.read_state().game_ui != 2:
+            assert self._memory and self._reader and self._injector
+            state = self._reader.read_state()
+            flow = classify_flow(
+                app_scene=state.game_ui,
+                game_mode=state.game_mode,
+                adventure_level=state.adventure_level,
+                background=state.scene,
+                seed_chooser_ready=bool(self._memory.get_select_card_ui_ptr()),
+            )
+            if state.is_paused:
+                raise ValueError("游戏已暂停，请先在游戏内继续后再选卡")
+            if flow.phase != "seed_selection":
                 raise ValueError("当前不在选卡界面")
+            if self._selection_submitted:
+                self.emit("action", "seed_selection_already_submitted", level="warning", action_id=action_id)
+                return {
+                    "status": "waiting", "action": "select_seeds", "action_id": action_id,
+                    "reason": "selection_already_submitted",
+                }
+            if not self._memory.get_select_card_ui_ptr():
+                raise ValueError("选卡界面仍在加载，请稍后再试")
+            required_count = len(state.seeds)
+            if required_count and len(seeds) != required_count:
+                raise ValueError(f"本关需要由 AI 选择 {required_count} 张不同植物卡，当前提交 {len(seeds)} 张")
+            if len(set(seeds)) != len(seeds):
+                raise ValueError("选卡不能包含重复植物")
+            if state.game_mode == 0 and state.adventure_level > 0:
+                available = set(available_adventure_seed_types(state.adventure_level))
+                unavailable = [seed for seed in seeds if seed not in available]
+                if unavailable:
+                    raise ValueError(f"本关尚未解锁这些植物类型: {unavailable}")
             for seed in seeds:
                 self._injector.choose_card(seed)
                 self.emit("action", "seed_selected", action_id=action_id, plant_type=seed,
                           plant=PLANT_NAMES.get(seed, str(seed)))
                 time.sleep(random.uniform(0.35, 0.65))
-            self._injector.pick_random_seeds()
-            time.sleep(random.uniform(0.45, 0.8))
+            # Old callers with no readable packet count retain the safe fill;
+            # normal AI selection submits the exact bank size and stays fully
+            # attributable to the model rather than random completion.
+            if not required_count:
+                self._injector.pick_random_seeds()
+                time.sleep(random.uniform(0.45, 0.8))
             self._injector.rock()
+            self._selection_submitted = True
         return {"status": "ok", "action": "select_seeds", "action_id": action_id,
                 "requested_types": seeds, "requested_names": [PLANT_NAMES.get(v, str(v)) for v in seeds]}
+
+    def advance_reward_flow(self, completed_level: int, step: int) -> dict[str, Any]:
+        """Advance the award UI using the script for the completed stage.
+
+        The primary award button is common to seed packets, notes and trophies.
+        Almanac/store intros are modal and need an Escape on the following step;
+        window messages avoid blocking a remote injected callback.
+        """
+        with self._lock:
+            self._require_connected()
+            assert self._injector
+            script = get_adventure_script(completed_level)
+            modal = script.reward_flow in {"almanac", "store_intro"}
+            if step == 0:
+                self._injector.window_click(402, 522)
+                operation = "click_primary_award_button"
+            elif step == 1 and modal:
+                self._injector.window_escape()
+                operation = "close_modal_followup"
+            elif step >= 1 and script.reward_flow == "zen_tutorial":
+                # The Zen tutorial is a separate non-planting mode.  A blind
+                # sequence could sell or move plants, so transition into it but
+                # deliberately stop the combat Agent there.
+                operation = "zen_tutorial_handoff"
+            else:
+                self._injector.window_click(402, 522)
+                operation = "retry_primary_award_button"
+        result = {
+            "status": "ok", "action": "advance_reward_flow",
+            "completed_level": completed_level, "step": step,
+            "reward_flow": script.reward_flow, "operation": operation,
+        }
+        self.emit("flow", "reward_step", **result)
+        return result
 
     def collect_items(self, *, action_id: str = "manual") -> dict[str, Any]:
         with self._lock:

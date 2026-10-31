@@ -88,3 +88,77 @@ def test_rejected_actions_do_not_stop_agent_as_system_failures():
     assert not any(args[1] == "stopped_after_failures" for args, _ in plugin.events if len(args) > 1)
     agent.close()
 
+
+def test_paused_game_waits_without_calling_model():
+    plugin = FakePlugin()
+    plugin.events = []
+    plugin.context_text = lambda **kwargs: json.dumps({
+        "game": {"in_battle": True, "ui": 3, "paused": True}
+    })
+    agent = DeepSeekAgent(plugin, "https://example.invalid/v1", "secret", "deepseek-flash")
+
+    def stop_after_first_wait(_seconds):
+        agent._stop.set()
+        return True
+
+    agent._stop.wait = stop_after_first_wait
+    with patch.object(agent, "_request_action") as request_action:
+        agent._run()
+    request_action.assert_not_called()
+    assert agent.phase == "stopped"
+    agent.close()
+
+
+def test_special_flow_waits_without_calling_model():
+    plugin = FakePlugin()
+    plugin.events = []
+    plugin.context_text = lambda **kwargs: json.dumps({
+        "game": {"in_battle": True, "ui": 3, "paused": False},
+        "flow": {"phase": "special_level", "agent_enabled": False},
+    })
+    agent = DeepSeekAgent(plugin, "https://example.invalid/v1", "secret", "deepseek-flash")
+
+    def stop_after_first_wait(_seconds):
+        agent._stop.set()
+        return True
+
+    agent._stop.wait = stop_after_first_wait
+    with patch.object(agent, "_request_action") as request_action:
+        agent._run()
+    request_action.assert_not_called()
+    agent.close()
+
+
+def test_level_memory_is_scoped_by_level_key():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent.iteration = 3
+    agent._remember_level_action("adventure:03", "wait", {"time": 1}, "ok", {"status": "ok"})
+    level_three, _ = agent._context_with_level_memory({
+        "game": {"level_key": "adventure:03"},
+        "flow": {"level_key": "adventure:03"},
+    })
+    level_four, _ = agent._context_with_level_memory({
+        "game": {"level_key": "adventure:04"},
+        "flow": {"level_key": "adventure:04"},
+    })
+    assert len(json.loads(level_three)["level_memory"]["recent_actions"]) == 1
+    assert json.loads(level_four)["level_memory"]["recent_actions"] == []
+    agent.close()
+
+
+def test_reward_flow_waits_for_fade_then_uses_local_script():
+    plugin = FakePlugin()
+    plugin.advance_reward_flow = lambda completed_level, step: {
+        "status": "ok", "completed_level": completed_level, "step": step,
+    }
+    agent = DeepSeekAgent(plugin, "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent._last_adventure_level = 10
+    flow = {"phase": "reward", "reward_flow": "zombie_note"}
+    with patch("pvz_agent_plugin.agent.time.monotonic", side_effect=[100.0, 104.0]):
+        agent._advance_reward_locally({}, flow)
+        assert agent.last_action is None
+        agent._advance_reward_locally({}, flow)
+    assert agent.last_action["action"] == "advance_reward_flow"
+    assert agent.last_action["arguments"] == {"completed_level": 10, "step": 0}
+    agent.close()
+

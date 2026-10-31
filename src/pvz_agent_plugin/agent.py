@@ -54,6 +54,12 @@ class DeepSeekAgent:
         self.system_failures = 0
         self.action_rejections = 0
         self._action_feedback: dict[str, Any] | None = None
+        self._selection_submitted = False
+        self._level_memories: dict[str, list[dict[str, Any]]] = {}
+        self._last_adventure_level = 0
+        self._reward_key = ""
+        self._reward_step = 0
+        self._reward_next_at = 0.0
         self._client = self._new_client()
 
     @property
@@ -76,6 +82,7 @@ class DeepSeekAgent:
         self.system_failures = 0
         self.action_rejections = 0
         self._action_feedback = None
+        self._selection_submitted = False
         self._thread = threading.Thread(target=self._run, name="pvz-agent", daemon=True)
         self._thread.start()
         self.plugin.emit("agent", "started", goal=self._goal, model=self.model, base_url=self.base_url)
@@ -107,12 +114,39 @@ class DeepSeekAgent:
             try:
                 self.phase = "observing"
                 context = self.plugin.context_text(snapshot=False)
-                game = json.loads(context).get("game", {})
+                observed = json.loads(context)
+                game = observed.get("game", {})
+                flow = observed.get("flow", {})
+                if game.get("mode") == 0 and game.get("ui") in (2, 3):
+                    self._last_adventure_level = int(game.get("level") or 0)
+                if game.get("paused"):
+                    self.phase = "waiting_for_user_resume"
+                    self.last_error = ""
+                    self._stop.wait(0.5)
+                    continue
+                if flow.get("phase") == "reward":
+                    self._advance_reward_locally(game, flow)
+                    self._stop.wait(0.35)
+                    continue
+                if flow and not flow.get("agent_enabled", False):
+                    self.phase = f"waiting_{flow.get('phase', 'manual_transition')}"
+                    self.last_error = ""
+                    self._stop.wait(0.5)
+                    continue
+                if game.get("ui") != 2:
+                    self._selection_submitted = False
+                elif self._selection_submitted:
+                    self.phase = "waiting_for_level_intro"
+                    self.last_error = ""
+                    self._stop.wait(0.5)
+                    continue
                 if not game.get("in_battle") and game.get("ui") != 2:
                     self.phase = "waiting_for_manual_transition"
                     self.last_error = ""
                     self._stop.wait(0.5)
                     continue
+
+                context, level_key = self._context_with_level_memory(observed)
 
                 self.iteration += 1
                 self.plugin.emit("agent", "iteration_started", iteration=self.iteration, goal=self._goal)
@@ -143,6 +177,9 @@ class DeepSeekAgent:
                         "action": action, "arguments": call,
                         "result": {"status": "rejected", "error": str(exc)},
                     }
+                    self._remember_level_action(
+                        level_key, action, call, "rejected", {"error": str(exc)}
+                    )
                     self.plugin.emit(
                         "agent", "action_rejected", level="warning", iteration=self.iteration,
                         action=action, arguments=call, error_type=type(exc).__name__, error=str(exc),
@@ -153,6 +190,9 @@ class DeepSeekAgent:
                     self._stop.wait(0.1)
                     continue
                 self.last_action = {"action": action, "arguments": call, "result": result}
+                self._remember_level_action(level_key, action, call, result.get("status", "ok"), result)
+                if action == "select_seeds" and result.get("status") in {"ok", "waiting"}:
+                    self._selection_submitted = True
                 self._action_feedback = None
                 self.last_error = ""
                 self.plugin.emit(
@@ -173,6 +213,7 @@ class DeepSeekAgent:
                     try:
                         self.phase = "reconnecting_game"
                         self.plugin.connect()
+                        self._selection_submitted = False
                         self.plugin.emit("agent", "game_reconnected", iteration=self.iteration)
                         self.system_failures = 0
                         self.last_error = ""
@@ -188,6 +229,65 @@ class DeepSeekAgent:
         self.phase = "stopped"
         self.plugin.emit("agent", "stopped", iteration=self.iteration, last_error=self.last_error)
 
+    def _advance_reward_locally(self, game: dict[str, Any], flow: dict[str, Any]) -> None:
+        completed_level = self._last_adventure_level or int(game.get("level") or 0)
+        key = f"adventure:{completed_level:02d}:{flow.get('reward_flow', 'next_level')}"
+        now = time.monotonic()
+        if self._reward_key != key:
+            self._reward_key = key
+            self._reward_step = 0
+            # AwardScreen fades in for 180 ticks; wait before pressing its button.
+            self._reward_next_at = now + 3.5
+        self.phase = f"advancing_reward_{flow.get('reward_flow', 'next_level')}"
+        if now < self._reward_next_at:
+            return
+        result = self.plugin.advance_reward_flow(completed_level, self._reward_step)
+        self.last_action = {
+            "action": "advance_reward_flow",
+            "arguments": {"completed_level": completed_level, "step": self._reward_step},
+            "result": result,
+        }
+        self._reward_step += 1
+        # Modal Almanac/store screens need longer to finish opening before Esc.
+        self._reward_next_at = now + (3.0 if self._reward_step == 1 else 2.0)
+
+    def _context_with_level_memory(self, observed: dict[str, Any]) -> tuple[str, str]:
+        flow = observed.get("flow", {})
+        game = observed.get("game", {})
+        level_key = str(flow.get("level_key") or game.get("level_key") or "unknown")
+        history = self._level_memories.get(level_key, [])[-16:]
+        enriched = dict(observed)
+        enriched["level_memory"] = {
+            "level_key": level_key,
+            "scope": "current_level_only",
+            "recent_actions": history,
+        }
+        return json.dumps(enriched, ensure_ascii=False, separators=(",", ":")), level_key
+
+    def _remember_level_action(
+        self,
+        level_key: str,
+        action: str,
+        arguments: dict[str, Any],
+        status: str,
+        result: dict[str, Any],
+    ) -> None:
+        history = self._level_memories.setdefault(level_key, [])
+        compact_result = {
+            key: result[key]
+            for key in ("status", "reason", "error", "row", "col", "verification")
+            if key in result
+        }
+        history.append({
+            "iteration": self.iteration,
+            "action": action,
+            "arguments": arguments,
+            "status": status,
+            "result": compact_result,
+        })
+        if len(history) > 32:
+            del history[:-32]
+
     def _request_action(self, context: str, feedback: dict[str, Any] | None = None) -> dict[str, Any]:
         system = (
             "You are a Plants vs. Zombies 1 strategy agent. You receive exact structured memory state. "
@@ -201,7 +301,10 @@ class DeepSeekAgent:
             "The plugin waits locally for sun/cooldown. "
             "Stacking is supported: lily pad/flower pot are support, pumpkin is armor, coffee bean wakes a sleeping mushroom. "
             "Upgrade cards must target their base plant; cob cannon targets the left of two adjacent kernel-pults. "
-            "Use fire_cob for an existing cob cannon and select_seeds only on the card selection screen. "
+            "Use fire_cob for an existing cob cannon. Call select_seeds only when flow.phase is seed_selection. "
+            "Seed selection is part of your evaluation: you must choose the loadout yourself from seed_selection.available_types, "
+            "select exactly seed_selection.required_count distinct useful plants, and call select_seeds once. "
+            "When flow.seed_system is conveyor, never call select_seeds; use the currently available card indexes and place_plant. "
             "Automatic collection is humanized and delayed; do not call collect_items while it is enabled. "
             "occupied_cells is authoritative. Never place a main-layer plant on an occupied main layer. "
             "If previous_action_feedback reports a rejected action, do not repeat that action at the same coordinates."

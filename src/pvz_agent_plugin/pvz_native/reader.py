@@ -179,6 +179,8 @@ class GameState:
     # 基础
     game_ui: int = 0
     game_mode: int = 0
+    adventure_level: int = 0
+    seed_chooser_ready: bool = False
     sun: int = 0
     scene: int = -1
     scene_name: str = "未知"
@@ -268,6 +270,7 @@ class PvZStateReader:
         # 基础信息
         state.game_ui = self._mem.get_game_ui()
         state.game_mode = self._mem.get_game_mode()
+        state.seed_chooser_ready = bool(self._mem.get_select_card_ui_ptr())
 
         if not self._mem.main_object:
             return state
@@ -280,6 +283,7 @@ class PvZStateReader:
 
         # 战斗中的详细状态
         state.sun = self._mem.get_sun()
+        state.adventure_level = self._mem.get_adventure_level()
         state.scene = self._mem.get_scene()
         state.scene_name = self.SCENE_NAMES.get(state.scene, "未知")
         state.is_paused = self._mem.is_game_paused()
@@ -328,7 +332,8 @@ class PvZStateReader:
             logger.debug("[PvZReader] 读取场地物品失败: {}", e)
 
         try:
-            state.lawn_mowers = self._read_lawn_mowers()
+            row_count = 6 if state.scene in (2, 3) else 5
+            state.lawn_mowers = self._read_lawn_mowers(row_count)
         except PvZMemoryError as e:
             logger.debug("[PvZReader] 读取割草机失败: {}", e)
 
@@ -669,7 +674,7 @@ class PvZStateReader:
     #  割草机读取
     # ------------------------------------------------------------------ #
 
-    def _read_lawn_mowers(self) -> list[LawnMowerInfo]:
+    def _read_lawn_mowers(self, row_count: int) -> list[LawnMowerInfo]:
         """读取割草机状态."""
         off = self._mem.offsets
         mo = self._mem.main_object
@@ -681,7 +686,7 @@ class PvZStateReader:
         count_max = self._mem.read_int(mo + off.lawn_mower_count_max)
 
         result: list[LawnMowerInfo] = []
-        for i in range(min(count_max, 12)):
+        for i in range(min(count_max, row_count)):
             addr = lm_array + i * off.lawn_mower_struct_size
 
             try:

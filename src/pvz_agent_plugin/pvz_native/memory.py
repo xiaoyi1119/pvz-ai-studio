@@ -406,6 +406,13 @@ class PvZMemory:
             [PVZ_BASE_ADDRESS, self.offsets.game_mode], read_type="int"
         )
 
+    def get_adventure_level(self) -> int:
+        """读取 Board::mLevel（冒险模式 1~50）."""
+        return self.read_chain_safe(
+            [PVZ_BASE_ADDRESS, self.offsets.main_object, self.offsets.adventure_level],
+            read_type="int",
+        )
+
     def get_card_slot_count(self, default: int = 10) -> int:
         """读取当前卡槽数量（选卡/战斗界面通用）.
 

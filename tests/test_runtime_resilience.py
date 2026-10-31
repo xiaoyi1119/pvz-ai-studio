@@ -88,3 +88,67 @@ def test_profile_name_and_avatar_are_saved_locally(tmp_path, monkeypatch):
     env = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "CHANNEL_NAME=新频道" in env
 
+
+def test_read_state_preserves_user_pause(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Injector:
+        def set_game_paused(self, paused):
+            raise AssertionError("read_state must not mutate the user's pause state")
+
+    class Reader:
+        def read_state(self):
+            from pvz_agent_plugin.pvz_native.reader import GameState
+            return GameState(game_ui=3, is_paused=True)
+
+    plugin._memory = Memory()
+    plugin._injector = Injector()
+    plugin._reader = Reader()
+    assert plugin.read_state()["game"]["paused"] is True
+
+
+def test_select_seeds_is_idempotent_during_level_intro(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+        def get_select_card_ui_ptr(self):
+            return 0x1234
+
+    class Injector:
+        def __init__(self):
+            self.rocks = 0
+
+        def choose_card(self, seed):
+            return None
+
+        def pick_random_seeds(self):
+            return None
+
+        def rock(self):
+            self.rocks += 1
+
+    class Reader:
+        def read_state(self):
+            from pvz_agent_plugin.pvz_native.reader import GameState
+            return GameState(game_ui=2, is_paused=False)
+
+    injector = Injector()
+    plugin._memory = Memory()
+    plugin._injector = injector
+    plugin._reader = Reader()
+    first = plugin.select_seeds([0], action_id="first")
+    second = plugin.select_seeds([0], action_id="second")
+    assert first["status"] == "ok"
+    assert second == {
+        "status": "waiting", "action": "select_seeds", "action_id": "second",
+        "reason": "selection_already_submitted",
+    }
+    assert injector.rocks == 1
+

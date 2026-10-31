@@ -64,7 +64,10 @@ WAIT_TIMEOUT = 0x00000102
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
 WM_LBUTTONUP = 0x0202
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
 MK_LBUTTON = 0x0001
+VK_ESCAPE = 0x1B
 
 # 进程权限 — 注入需要更多权限
 PROCESS_VM_OPERATION = 0x0008
@@ -644,6 +647,43 @@ class PvZCodeInjector:
         code = _build_mouse_click_code(x, y, button)
         self._inject_and_execute(bytes(code))
         time.sleep(0.05)
+
+    def window_click(self, x: int, y: int) -> None:
+        """Post a background click in 800x600 logical coordinates.
+
+        Unlike injected MouseClick this does not wait inside a game callback,
+        which is important for award buttons that synchronously open modal
+        Almanac or Store dialogs.
+        """
+        hwnd = self._mem._hwnd
+        if not hwnd:
+            raise RuntimeError("PvZ 窗口句柄无效，无法点击")
+        rect = _RECT()
+        if not _GetClientRect(hwnd, ctypes.byref(rect)):
+            raise RuntimeError("无法读取 PvZ 客户区大小")
+        width = max(1, rect.right - rect.left)
+        height = max(1, rect.bottom - rect.top)
+        sx = round(x * width / 800)
+        sy = round(y * height / 600)
+        packed = ((sy & 0xFFFF) << 16) | (sx & 0xFFFF)
+        logger.info("[窗口消息] 点击 ({},{}), client={}x{}", x, y, width, height)
+        if not _PostMessageW(hwnd, WM_MOUSEMOVE, 0, packed):
+            raise RuntimeError("发送鼠标移动失败")
+        if not _PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, packed):
+            raise RuntimeError("发送鼠标按下失败")
+        if not _PostMessageW(hwnd, WM_LBUTTONUP, 0, packed):
+            raise RuntimeError("发送鼠标松开失败")
+
+    def window_escape(self) -> None:
+        """Close the current modal UI without focusing the game window."""
+        hwnd = self._mem._hwnd
+        if not hwnd:
+            raise RuntimeError("PvZ 窗口句柄无效，无法发送按键")
+        logger.info("[窗口消息] Escape")
+        if not _PostMessageW(hwnd, WM_KEYDOWN, VK_ESCAPE, 0):
+            raise RuntimeError("发送 Escape 按下失败")
+        if not _PostMessageW(hwnd, WM_KEYUP, VK_ESCAPE, 0):
+            raise RuntimeError("发送 Escape 松开失败")
 
     def window_drag(
         self,
