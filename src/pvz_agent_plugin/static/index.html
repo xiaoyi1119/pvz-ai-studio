@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="bili">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PVZ AI Live</title>
+  <link rel="stylesheet" href="/static/style.css?v=10">
+</head>
+<body>
+  <main class="broadcast-shell">
+    <header class="broadcast-header">
+      <div class="channel-brand">
+        <button id="profileBtn" class="avatar-button" type="button" aria-label="修改频道头像和名称"><img id="channelAvatar" src="/static/avatar.jpg" class="avatar" alt="频道头像"></button>
+        <div><span class="overline">PVZ · AI LIVE</span><h1 id="channelName">小盆栽的植物园</h1></div>
+      </div>
+      <div class="header-center">
+        <span id="gameChip" class="status-chip off"><i></i>游戏未连接</span>
+        <span id="captureChip" class="status-chip off"><i></i>等待画面</span>
+        <span id="agentChip" class="status-chip off"><i></i>Agent 已停止</span>
+      </div>
+      <div class="header-tools">
+        <button id="settingsBtn" class="settings-trigger" type="button" aria-label="打开连接设置">⚙ 设置</button>
+        <div class="theme-switcher" aria-label="配色主题">
+          <button class="theme-button active" data-theme="bili"><i></i>红蓝</button>
+          <button class="theme-button" data-theme="green"><i></i>绿色</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="broadcast-grid">
+      <section class="game-column">
+        <article class="game-frame">
+          <div class="frame-head">
+            <div class="live-mark"><i></i>LIVE GAME</div>
+            <div class="scene-meta"><span id="scene">等待游戏</span><time id="clock">00:00</time></div>
+          </div>
+          <div class="game-viewport">
+            <img id="gameFeed" src="/api/capture/stream" alt="植物大战僵尸实时游戏画面">
+            <div id="captureFallback" class="capture-fallback">
+              <span class="capture-icon">◎</span><b>正在连接游戏画面</b>
+              <small>请保持“植物大战僵尸中文版”窗口处于打开状态</small>
+            </div>
+            <div class="video-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          </div>
+        </article>
+
+      </section>
+
+      <aside class="intel-panel">
+        <div class="intel-heading">
+          <div><span class="overline">LIVE BATTLE DATA</span><h2>战场情报</h2></div>
+          <span class="live-badge"><i></i>实时同步</span>
+        </div>
+
+        <section class="overview-grid">
+          <article class="metric-card sun-metric"><span class="metric-title">阳光资源</span><svg class="metric-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M19.8 4.2l-2.1 2.1M6.3 17.7l-2.1 2.1"/></svg><strong id="sun">0</strong><small>SUN ENERGY</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="sunSpark" points="0,28 100,28"/></svg></article>
+          <article class="metric-card wave-metric"><span class="metric-title">当前波次</span><svg class="metric-icon skull-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a7 7 0 1 1 14 0c0 2.5-1.2 4.2-3 5.3V20H8v-3.7C6.2 15.2 5 13.5 5 11Z"/><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M10 16h4M11 16v3M13 16v3"/></svg><strong id="wave">0/0</strong><small id="waveHint">等待关卡</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="waveSpark" points="0,28 100,28"/></svg></article>
+          <article class="metric-card plant-metric"><span class="metric-title">场上植物</span><svg class="metric-icon leaf-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5C12 3.6 6.4 6.8 5.1 12.1c-.7 2.8.7 5.4 3.3 6.4 4.8 1.8 9.5-2.7 12.1-15Z"/><path d="M4 21c2.5-6.1 6.4-9.9 12.2-12.1"/></svg><strong id="plantCount">0</strong><small>PLANTS</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="plantSpark" points="0,28 100,28"/></svg></article>
+          <article class="metric-card danger-metric"><span class="metric-title">场上僵尸</span><svg class="metric-icon skull-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a7 7 0 1 1 14 0c0 2.5-1.2 4.2-3 5.3V20H8v-3.7C6.2 15.2 5 13.5 5 11Z"/><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M10 16h4M11 16v3M13 16v3"/></svg><strong id="zombieCount">0</strong><small>最高威胁：<b id="dangerLane">—</b></small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="zombieSpark" points="0,28 100,28"/></svg></article>
+        </section>
+
+        <section class="lane-card">
+          <div class="section-title"><div><span class="overline">LANE PRESSURE</span><h3>路线威胁</h3></div><span class="risk-legend"><i>高</i>/<i>中</i>/<i>低</i></span></div>
+          <div id="laneThreatList" class="lane-threat-list"></div>
+        </section>
+
+        <section class="decision-card">
+          <div class="section-title"><div><span class="overline">AI DECISION & REASONING</span><h3>AI 实时决策</h3></div><span id="eventCount" class="counter">0</span></div>
+          <div id="events" class="events empty">暂无决策记录</div>
+        </section>
+
+        <footer class="intel-footer">
+          <div><span>游戏接口：<b id="gameApiState">未连接</b></span><span>Agent：<b id="agentStateText">待机</b></span></div>
+          <div><span class="footer-dot"></span><span>当前模型：<b id="currentModel">—</b></span><span>响应：<b id="modelLatency">—</b></span><span>APM：<b id="actionRate">0</b></span></div>
+        </footer>
+      </aside>
+    </section>
+  </main>
+  <dialog id="profileDialog" class="settings-dialog profile-dialog">
+    <section class="settings-card">
+      <header class="settings-head">
+        <div><span class="overline">CHANNEL PROFILE</span><h2>频道资料</h2></div>
+        <button id="closeProfileBtn" class="settings-close" type="button" aria-label="关闭频道资料">×</button>
+      </header>
+      <div class="profile-editor">
+        <img id="profilePreview" src="/static/avatar.jpg" alt="头像预览">
+        <div class="profile-fields">
+          <label>频道名称<input id="profileName" type="text" maxlength="40" autocomplete="off"></label>
+          <label class="avatar-picker">选择新头像<input id="profileAvatarFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+          <small>支持 PNG、JPEG、WebP，文件不超过 5MB</small>
+        </div>
+      </div>
+      <p id="profileFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
+      <div class="settings-actions">
+        <button id="saveProfileBtn" class="button primary" type="button">保存资料</button>
+        <button id="cancelProfileBtn" class="button" type="button">取消</button>
+      </div>
+    </section>
+  </dialog>
+  <dialog id="settingsDialog" class="settings-dialog">
+    <section class="settings-card">
+      <header class="settings-head">
+        <div><span class="overline">CONNECTION SETTINGS</span><h2>API 与控制设置</h2></div>
+        <button id="closeSettingsBtn" class="settings-close" type="button" aria-label="关闭设置">×</button>
+      </header>
+      <div class="settings-fields">
+        <label>DeepSeek API 地址<input id="apiBaseUrl" type="url" autocomplete="url" spellcheck="false"></label>
+        <label>模型名称<span class="model-input-row"><input id="apiModel" type="text" autocomplete="off" spellcheck="false"><button id="loadModelsBtn" class="model-load hidden" type="button" aria-label="获取可用模型">＋</button></span></label>
+        <label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="留空则保持现有密钥"></label>
+        <small id="apiKeyStatus" class="key-status">尚未检查本地密钥</small>
+        <div id="modelOptions" class="model-options hidden" aria-live="polite"></div>
+        <label>本轮默认目标<input id="goal" type="text" autocomplete="off"></label>
+      </div>
+      <p class="settings-note">API Key 只保存在本机 .env 文件中，界面和状态接口不会回传密钥内容。</p>
+      <p id="settingsFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
+      <div class="settings-actions">
+        <button id="saveSettingsBtn" class="button primary" type="button">测试并保存</button>
+        <button id="saveDirectBtn" class="button" type="button">直接保存并退出</button>
+        <button id="startBtn" class="button primary" type="button">启动 Agent</button>
+        <button id="stopBtn" class="button stop" type="button">停止 Agent</button>
+      </div>
+    </section>
+  </dialog>
+  <p id="toast" role="status" aria-live="polite"></p>
+  <script src="/static/app.js?v=10"></script>
+</body>
+</html>
