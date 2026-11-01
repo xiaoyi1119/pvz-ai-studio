@@ -11,6 +11,10 @@ def plant(plant_type, row=0, col=0, sleeping=False, index=0):
     )
 
 
+def grid_item(item_type, row=0, col=0):
+    return SimpleNamespace(item_type=item_type, row=row, col=col)
+
+
 def test_pumpkin_can_stack_but_not_duplicate():
     sunflower = plant(1)
     assert check_placement(30, 0, 0, [sunflower]).allowed
@@ -36,3 +40,18 @@ def test_board_keeps_multiple_layers():
     assert cell["layers"]["support"][0]["type"] == 16
     assert cell["layers"]["main"][0]["type"] == 1
     assert cell["layers"]["armor"][0]["type"] == 30
+
+
+def test_grave_blocks_normal_plants_and_only_accepts_grave_buster():
+    grave = grid_item(1, row=2, col=6)
+    blocked = check_placement(8, 2, 6, [], [grave])
+    assert not blocked.allowed
+    assert "墓碑" in blocked.reason
+
+    allowed = check_placement(11, 2, 6, [], [grave])
+    assert allowed.allowed
+    assert "grave_at_target" in allowed.requirements
+
+    no_grave = check_placement(11, 2, 5, [], [grave])
+    assert not no_grave.allowed
+    assert "真实墓碑格" in no_grave.reason

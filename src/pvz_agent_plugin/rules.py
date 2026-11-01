@@ -45,7 +45,13 @@ def plants_at(plants: Iterable[Any], row: int, col: int) -> list[Any]:
     return [p for p in plants if p.row == row and p.col == col]
 
 
-def check_placement(plant_type: int, row: int, col: int, plants: Iterable[Any]) -> PlacementCheck:
+def check_placement(
+    plant_type: int,
+    row: int,
+    col: int,
+    plants: Iterable[Any],
+    grid_items: Iterable[Any] = (),
+) -> PlacementCheck:
     """Conservative PvZ stacking/upgrade validation.
 
     Final terrain and special-level legality is deliberately left to the game UI path.
@@ -55,6 +61,27 @@ def check_placement(plant_type: int, row: int, col: int, plants: Iterable[Any]) 
     types = {p.plant_type for p in cell}
     layer = plant_layer(plant_type)
     name = PLANT_NAMES.get(plant_type, f"类型{plant_type}")
+    graves = [
+        item for item in grid_items
+        if item.row == row and item.col == col and item.item_type == 1
+    ]
+
+    # A grave is not represented in the plant array.  Without this explicit
+    # check, the native PutPlant fallback can bypass the game's UI rejection
+    # and create an illegal plant/grave overlap.
+    if plant_type == 11:
+        if not graves:
+            return PlacementCheck(
+                False, "墓碑吞噬者必须种在真实墓碑格上", layer, ("grave_at_target",)
+            )
+        if cell:
+            return PlacementCheck(False, "墓碑格已有植物，不能放墓碑吞噬者", layer)
+        return PlacementCheck(True, "目标格存在墓碑，可执行清除", layer, ("grave_at_target",))
+    if graves:
+        return PlacementCheck(
+            False, "目标格有墓碑；普通植物不能种在墓碑上，请改选空格或使用墓碑吞噬者",
+            layer, ("no_grave_at_target",),
+        )
 
     if plant_type in SUPPORT_TYPES:
         if types & SUPPORT_TYPES:

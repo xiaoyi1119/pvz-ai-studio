@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .agent import DeepSeekAgent
+from . import __version__
 from .capture import GameCaptureHub
 from .plugin import PvZPlugin
 from .pvz_native.offsets import PLANT_NAMES, PLANT_SUN_COST, PLANT_UPGRADE_MAP, ZOMBIE_NAMES
@@ -43,7 +44,7 @@ async def lifespan(_: FastAPI):
             plugin.disconnect()
 
 
-app = FastAPI(title="PvZ Agent Plugin", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="PVZ AI Studio", version=__version__, lifespan=lifespan)
 
 
 class ActionRequest(BaseModel):
@@ -236,7 +237,7 @@ def safe(call):
 
 @app.get("/api/status")
 def api_status():
-    return {"plugin": plugin.status(), "agent": agent.status()}
+    return {"app_version": __version__, "plugin": plugin.status(), "agent": agent.status()}
 
 
 @app.get("/api/settings")

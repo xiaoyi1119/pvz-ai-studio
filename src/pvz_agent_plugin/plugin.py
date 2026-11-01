@@ -358,7 +358,9 @@ class PvZPlugin:
                     seed_chooser_ready=state.seed_chooser_ready,
                 )
                 conveyor = flow.seed_system == "conveyor"
-                check = check_placement(plant_type, row, col, state.plants)
+                check = check_placement(
+                    plant_type, row, col, state.plants, state.grid_items
+                )
                 if not check.allowed:
                     raise ValueError(check.reason)
                 if seed.is_ready and (conveyor or state.sun >= seed.sun_cost):

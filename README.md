@@ -1,5 +1,7 @@
 # PVZ AI Studio
 
+当前版本：`0.3.1`
+
 一个面向经典版《植物大战僵尸》的 Windows 本地 AI 控制与直播观测工具。它把游戏内存状态转换为结构化语义数据，让支持工具调用的大模型观察战场、选择动作，并由插件在后台执行与验证。
 
 > English summary: A Windows-native semantic agent and live dashboard for classic Plants vs. Zombies. It reads structured game state from memory and executes validated game actions without relying on screenshot coordinates or foreground mouse control.
