@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import Counter
 from typing import Any
 
 import httpx
@@ -352,7 +353,7 @@ class DeepSeekAgent:
         history = self._level_memories.setdefault(level_key, [])
         compact_result = {
             key: result[key]
-            for key in ("status", "reason", "error", "row", "col", "verification")
+            for key in ("status", "reason", "error", "plant", "plant_type", "row", "col", "verification")
             if key in result
         }
         history.append({
@@ -364,6 +365,39 @@ class DeepSeekAgent:
         })
         if len(history) > 32:
             del history[:-32]
+
+    @staticmethod
+    def _strategy_snapshot(observed: dict[str, Any]) -> str:
+        """Turn the exact board into a short, model-friendly composition audit."""
+        plants: list[dict[str, Any]] = []
+        for cell in observed.get("occupied_cells", []):
+            for layer in cell.get("layers", {}).values():
+                for plant in layer:
+                    item = dict(plant)
+                    item["row"] = cell.get("row")
+                    item["col"] = cell.get("col")
+                    plants.append(item)
+        counts = Counter(str(p.get("name") or p.get("type")) for p in plants)
+        count_text = "、".join(f"{name}×{count}" for name, count in counts.most_common()) or "无植物"
+        rows = int(observed.get("game", {}).get("board_rows") or 5)
+        lane_text = []
+        for row in range(rows):
+            names = [str(p.get("name")) for p in plants if p.get("row") == row]
+            lane_text.append(f"{row}:{'/'.join(names) if names else '空'}")
+        lines = [f"【实时阵型审计】总量：{count_text}。逐路：{'；'.join(lane_text)}。"]
+        puff = counts.get("小喷菇", 0)
+        sun_shroom = counts.get("阳光菇", 0)
+        sustained = sum(counts.get(name, 0) for name in ("大喷菇", "胆小菇", "豌豆射手", "寒冰射手", "双发射手"))
+        level = int(observed.get("game", {}).get("level") or 0)
+        if 11 <= level <= 19:
+            lines.append(
+                f"夜间结构：过渡小喷菇{puff}、阳光菇{sun_shroom}、持续远程火力{sustained}。"
+                "小喷菇只负责开局补漏和近距离拖延；已有基本逐路掩护后，禁止因为零费而无目标铺满。"
+                "阳光允许时优先补后排阳光菇、各路大喷菇/已解锁持续火力和前排阻挡。"
+            )
+            if puff >= 6 and puff > sun_shroom + sustained:
+                lines.append("当前小喷菇明显过量：除非某路正要漏怪，本轮不要再种小喷菇，必须转经济、持续火力、防御或安全清墓碑。")
+        return "\n".join(lines)
 
     def _request_action(self, context: str, feedback: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
@@ -408,6 +442,8 @@ class DeepSeekAgent:
                 str(flow.get("level_label") or game.get("level_label") or "当前关卡"),
                 level_strategy,
             )
+            if not selection_turn:
+                system += "\n\n" + self._strategy_snapshot(observed)
         user_content = f"goal: {self._goal}\n<game_state>\n{context}\n</game_state>"
         if feedback:
             user_content += "\n<previous_action_feedback>\n" + json.dumps(

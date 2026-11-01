@@ -123,6 +123,9 @@ FUNC_CHOOSE_CARD = 0x486030
 FUNC_ROCK = 0x486D20
 # PickRandomSeeds(): 随机填满剩余空卡槽 (等价点调试试玩按钮)
 FUNC_PICK_RANDOM_SEEDS = 0x4859B0
+# SeedPacket::WasPlanted(): 使用游戏自己的植物刷新时间并启动冷却。
+# thiscall: ECX = SeedPacket*。
+FUNC_SEED_PACKET_WAS_PLANTED = 0x488EC0
 
 # GridToAbscissa(row, col) → x 像素坐标
 # ECX = Board*, EAX = col, ESI = row
@@ -593,7 +596,7 @@ class PvZCodeInjector:
         time.sleep(0.05)
 
     def consume_seed_card(self, card_index: int, cooldown: int) -> None:
-        """直接种植后同步卡片冷却，保持与正常用卡相同的资源约束."""
+        """直接种植后复现 SeedPacket::WasPlanted 的刷新状态机."""
         self._mem.refresh_main_object()
         board = self._mem.main_object
         if not board:
@@ -603,11 +606,25 @@ class PvZCodeInjector:
         if not seed_array:
             raise RuntimeError("SeedArray* 为空，无法更新卡片冷却")
         card_addr = seed_array + off.seed_card_offset + card_index * off.seed_card_size
-        self.write_int(card_addr + off.sc_cd, max(0, cooldown))
-        # PutPlant 不会更新卡片对象；保持 usable=true，由 cd>0 表示冷却中。
-        # 游戏会递减 cd，归零后即可再次使用。
-        self._write_bytes(card_addr + off.sc_usable, b"\x01")
-        logger.debug("[注入] 卡片 [{}] 进入冷却 {}cs", card_index, cooldown)
+        # 原版不是倒计时：mRefreshCounter 从 0 递增，超过
+        # mRefreshTime 后才 Activate。此前把 counter 写成 cooldown 并把
+        # mActive 设为 true，会产生“数值卡在 750”的非法混合状态。
+        # 首次用卡时内存里的 mRefreshTime 可能仍为 0，不能沿用调用者
+        # 读到的旧值；直接调用游戏自己的 WasPlanted() 才能按植物类型
+        # 获取准确刷新时间。
+        self.write_int(card_addr + off.sc_cd, 0)
+        self._write_bytes(card_addr + off.sc_usable, b"\x00")
+        self._write_bytes(card_addr + off.sc_refreshing, b"\x00")
+        code = bytearray()
+        code += b"\xB9" + struct.pack("<I", card_addr)  # mov ecx, SeedPacket*
+        code += b"\xB8" + struct.pack("<I", FUNC_SEED_PACKET_WAS_PLANTED)
+        code += b"\xFF\xD0\xC3"  # call eax; ret
+        self._inject_and_execute(bytes(code))
+        actual_cooldown = self._mem.read_int(card_addr + off.sc_initial_cd)
+        logger.debug(
+            "[注入] 卡片 [{}] 进入冷却 {}cs (此前观测 {}cs)",
+            card_index, actual_cooldown, cooldown,
+        )
 
     def set_game_paused(self, paused: bool) -> None:
         """直接设置 Board 的暂停标志，不发送 Esc、不激活游戏窗口."""

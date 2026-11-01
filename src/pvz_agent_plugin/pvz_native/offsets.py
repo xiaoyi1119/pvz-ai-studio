@@ -321,14 +321,15 @@ class PvZOffsets:
     seed_card_offset: int = 0x28    # 第 0 张卡片起始偏移
     seed_card_size: int = 0x50      # 每张卡片大小 (来自 pvztoolkit slot_seed_struct_size)
     sc_type: int = 0x34             # 卡片内: 种子类型
-    sc_cd: int = 0x24               # 卡片内: 冷却
-    sc_initial_cd: int = 0x28       # 卡片内: 初始冷却
+    sc_cd: int = 0x24               # 卡片内: 刷新计数器（从 0 递增）
+    sc_initial_cd: int = 0x28       # 卡片内: 本次刷新所需总时间
     sc_imitator_type: int = 0x38    # 卡片内: 模仿者类型
     sc_x: int = 0x08                # 卡片内: 横坐标
     sc_y: int = 0x0c                # 卡片内: 纵坐标
     sc_width: int = 0x10            # 卡片内: 宽度
     sc_height: int = 0x14           # 卡片内: 高度
-    sc_usable: int = 0x48           # 卡片内: 是否可用
+    sc_usable: int = 0x48           # 卡片内: mActive，是否已激活
+    sc_refreshing: int = 0x49       # 卡片内: mRefreshing，是否正在刷新
 
     # 收集物字段
     i_abscissa: int = 0x24          # float

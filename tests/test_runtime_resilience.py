@@ -221,6 +221,26 @@ def _seed(index: int, plant_type: int, *, cost: int = 0) -> SeedInfo:
     )
 
 
+def test_seed_readiness_uses_active_flag_and_reports_true_remaining_time():
+    # PvZ's mRefreshCounter counts upward.  A legacy/native-fallback state may
+    # have a non-zero counter while the authoritative mActive flag is true.
+    active = SeedInfo(
+        index=0, plant_type=8, name="小喷菇", sun_cost=0,
+        cd=750, initial_cd=750, is_usable=True, imitator_type=-1,
+    )
+    assert active.is_ready is True
+    assert active.cd_progress == 1.0
+    assert active.cooldown_remaining == 0
+
+    refreshing = SeedInfo(
+        index=0, plant_type=8, name="小喷菇", sun_cost=0,
+        cd=250, initial_cd=750, is_usable=False, imitator_type=-1,
+    )
+    assert refreshing.is_ready is False
+    assert refreshing.cd_progress == pytest.approx(1 / 3)
+    assert refreshing.cooldown_remaining == 500
+
+
 def test_conveyor_rejects_empty_negative_card_before_any_injection(tmp_path):
     plugin = PvZPlugin(log_dir=tmp_path)
 

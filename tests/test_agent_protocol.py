@@ -261,3 +261,59 @@ def test_strategy_assist_is_a_hard_gate_and_only_injects_current_level_hint():
     assert "首次泳池关" not in captured[1]
     agent.close()
 
+
+def test_strategy_assist_flags_puff_shroom_spam_from_live_board():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action", "arguments": '{"action":"wait","time":1}'
+        }}]}}]
+    }
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(url, **kwargs):
+        captured["system"] = kwargs["json"]["messages"][0]["content"]
+        return FakeResponse()
+
+    cells = []
+    for index in range(7):
+        cells.append({
+            "row": index % 5, "col": 2 + index // 5,
+            "layers": {"main": [{"name": "小喷菇", "type": 8}]},
+        })
+    cells.append({
+        "row": 0, "col": 0,
+        "layers": {"main": [{"name": "阳光菇", "type": 9}]},
+    })
+    context = json.dumps({
+        "game": {"mode": 0, "level": 14, "level_label": "冒险 2-4", "board_rows": 5},
+        "flow": {"phase": "battle", "level_label": "冒险 2-4"},
+        "occupied_cells": cells,
+    })
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent.configure_strategy_assist(True)
+    with patch.object(agent._client, "post", fake_post):
+        agent._request_action(context)
+    assert "小喷菇×7" in captured["system"]
+    assert "当前小喷菇明显过量" in captured["system"]
+    assert "5–7株后排阳光菇" in captured["system"]
+    agent.close()
+
+
+def test_level_memory_keeps_plant_identity_for_repetition_detection():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent._remember_level_action(
+        "adventure:14", "place_plant", {"card_index": 1, "row": 2, "col": 3}, "ok",
+        {"status": "ok", "plant": "小喷菇", "plant_type": 8, "row": 2, "col": 3},
+    )
+    memory = agent._level_memories["adventure:14"][0]["result"]
+    assert memory["plant"] == "小喷菇"
+    assert memory["plant_type"] == 8
+    agent.close()
+

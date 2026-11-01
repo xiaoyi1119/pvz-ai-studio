@@ -46,9 +46,9 @@ class SeedInfo:
     plant_type: int     # 植物类型 ID
     name: str           # 植物名称
     sun_cost: int       # 阳光消耗
-    cd: int             # 当前冷却 (厘秒, 0=可用)
-    initial_cd: int     # 初始冷却 (厘秒)
-    is_usable: bool     # 是否可用
+    cd: int             # mRefreshCounter，刷新期间从 0 递增
+    initial_cd: int     # mRefreshTime，本次刷新总时长
+    is_usable: bool     # mActive；原游戏判断卡片是否激活的权威字段
     imitator_type: int  # 模仿者实际类型 (-1=非模仿者)
     x: int = 0          # 卡片横坐标
     y: int = 0          # 卡片纵坐标
@@ -57,14 +57,22 @@ class SeedInfo:
 
     @property
     def is_ready(self) -> bool:
-        return self.is_usable and self.cd == 0
+        return self.is_usable
 
     @property
     def cd_progress(self) -> float:
         """冷却进度 0.0~1.0, 1.0=就绪."""
-        if self.initial_cd <= 0:
+        if self.is_usable:
             return 1.0
-        return max(0.0, min(1.0, 1.0 - self.cd / self.initial_cd))
+        if self.initial_cd <= 0:
+            return 0.0
+        return max(0.0, min(1.0, self.cd / self.initial_cd))
+
+    @property
+    def cooldown_remaining(self) -> int:
+        if self.is_usable:
+            return 0
+        return max(0, self.initial_cd - self.cd)
 
 
 @dataclass

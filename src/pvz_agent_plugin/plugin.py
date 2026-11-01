@@ -130,11 +130,13 @@ class PvZPlugin:
             cards.append({
                 "index": seed.index, "type": seed.plant_type, "actual_type": actual_type,
                 "name": seed.name, "cost": seed.sun_cost,
-                "cooldown_cs": seed.cd, "cooldown_seconds": round(seed.cd / 100, 2),
-                "cooldown": round(seed.cd / 100, 2),
+                "refresh_counter_cs": seed.cd,
+                "cooldown_cs": seed.cooldown_remaining,
+                "cooldown_seconds": round(seed.cooldown_remaining / 100, 2),
+                "cooldown": round(seed.cooldown_remaining / 100, 2),
                 "initial_cooldown_cs": seed.initial_cd, "cooldown_progress": round(seed.cd_progress, 3),
                 "usable_flag": seed.is_usable,
-                "ready": seed.cd == 0 and (conveyor or state.sun >= seed.sun_cost),
+                "ready": seed.is_ready and (conveyor or state.sun >= seed.sun_cost),
                 "affordable": conveyor or state.sun >= seed.sun_cost,
                 "requires_sun": not conveyor, "imitator_type": seed.imitator_type,
                 "ui_rect": {"x": seed.x, "y": seed.y, "width": seed.width, "height": seed.height},
@@ -359,7 +361,7 @@ class PvZPlugin:
                 check = check_placement(plant_type, row, col, state.plants)
                 if not check.allowed:
                     raise ValueError(check.reason)
-                if seed.cd == 0 and (conveyor or state.sun >= seed.sun_cost):
+                if seed.is_ready and (conveyor or state.sun >= seed.sun_cost):
                     before_types = [p.plant_type for p in state.plants if p.row == row and p.col in {col, col + 1}]
                     self.emit("action", "placement_precheck", action_id=action_id, card_index=card_index,
                               plant_type=plant_type, plant=seed.name, row=row, col=col, sun=state.sun,
@@ -387,10 +389,13 @@ class PvZPlugin:
                     break
             if time.monotonic() >= deadline:
                 requirement = "传送带卡片" if conveyor else f"sun={state.sun}/{seed.sun_cost}"
-                raise TimeoutError(f"等待 {seed.name} 可用超时 (cd={seed.cd}, {requirement})")
+                raise TimeoutError(
+                    f"等待 {seed.name} 可用超时 "
+                    f"(active={seed.is_usable}, remaining={seed.cooldown_remaining}, {requirement})"
+                )
             if not waiting_logged:
                 self.emit("action", "waiting_resources", action_id=action_id, card_index=card_index,
-                          plant=seed.name, cooldown_cs=seed.cd, sun=state.sun,
+                          plant=seed.name, cooldown_cs=seed.cooldown_remaining, sun=state.sun,
                           required_sun=0 if conveyor else seed.sun_cost, conveyor=conveyor)
                 waiting_logged = True
             time.sleep(0.1)
@@ -405,7 +410,7 @@ class PvZPlugin:
             if conveyor:
                 accepted = accepted or after_card_type != seed.plant_type
             else:
-                accepted = accepted or after_state.seeds[card_index].cd > 0
+                accepted = accepted or not after_state.seeds[card_index].is_usable
             if not conveyor and seed.sun_cost > 0:
                 accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted and interaction == "window_drag":
@@ -429,7 +434,7 @@ class PvZPlugin:
                 if conveyor:
                     accepted = accepted or after_card_type != seed.plant_type
                 else:
-                    accepted = accepted or after_state.seeds[card_index].cd > 0
+                    accepted = accepted or not after_state.seeds[card_index].is_usable
                 if not conveyor and seed.sun_cost > 0:
                     accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted:
