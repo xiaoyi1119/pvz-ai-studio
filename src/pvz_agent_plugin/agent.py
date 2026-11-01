@@ -8,6 +8,8 @@ from typing import Any
 import httpx
 
 from .plugin import PvZPlugin
+from .level_scripts import get_adventure_script
+from .strategy_prompts import build_strategy_assist_prompt
 
 
 PVZ_TOOL = {
@@ -40,11 +42,19 @@ PVZ_TOOL = {
 
 
 class DeepSeekAgent:
-    def __init__(self, plugin: PvZPlugin, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        plugin: PvZPlugin,
+        base_url: str,
+        api_key: str,
+        model: str,
+        strategy_assist_enabled: bool = False,
+    ) -> None:
         self.plugin = plugin
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.strategy_assist_enabled = bool(strategy_assist_enabled)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._goal = ""
@@ -117,7 +127,15 @@ class DeepSeekAgent:
             "model": self.model, "iteration": self.iteration, "last_action": self.last_action,
             "phase": self.phase, "system_failures": self.system_failures,
             "action_rejections": self.action_rejections,
+            "strategy_assist_enabled": self.strategy_assist_enabled,
         }
+
+    def configure_strategy_assist(self, enabled: bool) -> None:
+        self.strategy_assist_enabled = bool(enabled)
+        self.plugin.emit(
+            "agent", "strategy_assist_changed",
+            enabled=self.strategy_assist_enabled,
+        )
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -353,21 +371,18 @@ class DeepSeekAgent:
         except (TypeError, ValueError, json.JSONDecodeError):
             observed = {}
         selection_turn = observed.get("flow", {}).get("phase") == "seed_selection"
+        game = observed.get("game", {})
+        flow = observed.get("flow", {})
         system = (
             "You are a Plants vs. Zombies 1 strategy agent. You receive exact structured memory state. "
             "Use exactly one pvz_action per turn. Never request screenshots, Windows mouse coordinates, keyboard input, or prose. "
-            "Cards, rows and columns are zero-based. COLUMN ORIENTATION IS CRITICAL: col=0 is the back line nearest the house/lawn mowers; "
-            "col=8 is the front line nearest the zombie spawn. For normal ranged attackers and economy plants, prefer back columns 0-2. "
-            "Never place pea shooters, sunflowers, repeaters, snow peas, kernel-pults, melon-pults or other persistent ranged/economy plants "
-            "in columns 7-8 unless every safer rear cell in that row is unavailable and the placement is an explicit emergency. "
-            "Use front columns mainly for disposable blockers, short-range plants, mines, squash, chompers, garlic or instant-use plants. "
-            "Before every place_plant call, verify the selected column follows these orientation and role rules. "
+            "Cards, rows and columns are zero-based; col=0 is nearest the house and col=8 is nearest zombie spawn. "
             "The plugin waits locally for sun/cooldown. "
             "Stacking is supported: lily pad/flower pot are support, pumpkin is armor, coffee bean wakes a sleeping mushroom. "
             "Upgrade cards must target their base plant; cob cannon targets the left of two adjacent kernel-pults. "
             "Use fire_cob for an existing cob cannon. Call select_seeds only when flow.phase is seed_selection. "
-            "Seed selection is part of your evaluation: the plugin has no preset deck and will never fill or replace your choices. "
-            "You must choose the loadout yourself from seed_selection.available_plants, select exactly "
+            "The plugin has no preset deck and never fills or replaces seed choices. Choose the loadout yourself from "
+            "seed_selection.available_plants, select exactly "
             "seed_selection.required_count distinct useful plants, and call select_seeds once. "
             "When flow.seed_system is conveyor, never call select_seeds; use the currently available card indexes and place_plant. "
             "Conveyor cards do not consume sun; ignore their normal sun_cost. Only cards present in the cards array are valid—"
@@ -376,12 +391,22 @@ class DeepSeekAgent:
             "occupied_cells is authoritative. Never place a main-layer plant on an occupied main layer. "
             "If previous_action_feedback reports a rejected action, do not repeat that action at the same coordinates."
         )
-        if selection_turn:
+        if selection_turn and self.strategy_assist_enabled:
             system += (
                 " THIS TURN IS ONLY FOR AI SEED SELECTION. Analyze the full spawn_plan, terrain, scene, costs and exact slot count. "
                 "Build a functional deck with economy, sustained damage, required terrain support, threat counters and emergency control. "
                 "Do not mechanically choose the first N plant IDs, and do not copy a prior deck unless the current level evidence justifies it. "
                 "Return action=select_seeds and include a concise selection_reason proving why these exact cards fit this level."
+            )
+        if self.strategy_assist_enabled:
+            level_strategy = ""
+            if game.get("mode") == 0:
+                level = int(game.get("level") or 0)
+                if 1 <= level <= 50:
+                    level_strategy = get_adventure_script(level).strategy
+            system += "\n\n" + build_strategy_assist_prompt(
+                str(flow.get("level_label") or game.get("level_label") or "当前关卡"),
+                level_strategy,
             )
         user_content = f"goal: {self._goal}\n<game_state>\n{context}\n</game_state>"
         if feedback:

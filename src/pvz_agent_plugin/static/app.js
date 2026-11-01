@@ -43,6 +43,23 @@ function profileFeedback(message = "", kind = "error") {
   feedback.className = message ? `settings-feedback ${kind}` : "settings-feedback hidden";
 }
 
+function strategyAssistFeedback(message = "", kind = "error") {
+  const feedback = $("strategyAssistFeedback");
+  feedback.textContent = message;
+  feedback.className = message ? `settings-feedback ${kind}` : "settings-feedback hidden";
+}
+
+function applyStrategyAssist(enabled) {
+  const active = Boolean(enabled);
+  const trigger = $("strategyAssistBtn");
+  trigger.classList.toggle("active", active);
+  trigger.innerHTML = `<span>✦</span> ${active ? "增强已开" : "辅助增强"}`;
+  $("strategyAssistState").textContent = active ? "已开启 · 下一轮请求生效" : "已关闭 · 不注入新增策略";
+  $("strategyAssistState").classList.toggle("enabled", active);
+  $("enableStrategyAssistBtn").disabled = active;
+  $("disableStrategyAssistBtn").disabled = !active;
+}
+
 function applyProfile(profile) {
   $("channelName").textContent = profile.name;
   $("channelAvatar").src = profile.avatar_url;
@@ -218,6 +235,7 @@ async function refresh() {
     $("gameApiState").textContent = status.plugin.connected ? "已连接" : "未连接";
     $("gameApiState").classList.toggle("online", status.plugin.connected);
     $("currentModel").textContent = status.agent.model || "—";
+    applyStrategyAssist(status.agent.strategy_assist_enabled);
     const lastModelResponse = [...events].reverse().find(event => (event.category || event.kind) === "model" && event.event === "response" && event.latency_ms != null);
     $("modelLatency").textContent = lastModelResponse ? `${Math.round(lastModelResponse.latency_ms)}ms` : "—";
     const minuteAgo = Date.now() - 60000;
@@ -330,6 +348,47 @@ $("saveProfileBtn").onclick = async () => {
     button.textContent = "保存资料";
   }
 };
+
+$("strategyAssistBtn").onclick = async () => {
+  try {
+    const data = await api("/api/strategy-assist");
+    applyStrategyAssist(data.enabled);
+    strategyAssistFeedback();
+    $("strategyAssistDialog").showModal();
+  } catch (error) {
+    toast(error.message);
+  }
+};
+$("closeStrategyAssistBtn").onclick = () => $("strategyAssistDialog").close();
+$("cancelStrategyAssistBtn").onclick = () => $("strategyAssistDialog").close();
+$("strategyAssistDialog").onclick = event => {
+  if (event.target === $("strategyAssistDialog")) $("strategyAssistDialog").close();
+};
+
+async function saveStrategyAssist(enabled) {
+  const enableButton = $("enableStrategyAssistBtn");
+  const disableButton = $("disableStrategyAssistBtn");
+  try {
+    strategyAssistFeedback(enabled ? "正在开启策略注入…" : "正在关闭策略注入…", "working");
+    enableButton.disabled = true;
+    disableButton.disabled = true;
+    const data = await post("/api/strategy-assist", {enabled});
+    applyStrategyAssist(data.enabled);
+    $("strategyAssistDialog").close();
+    requestAnimationFrame(() => toast(data.enabled ? "辅助增强已开启" : "辅助增强已关闭"));
+  } catch (error) {
+    strategyAssistFeedback(error.message, "error");
+  } finally {
+    enableButton.disabled = false;
+    disableButton.disabled = false;
+    const current = $("strategyAssistState").classList.contains("enabled");
+    enableButton.disabled = current;
+    disableButton.disabled = !current;
+  }
+}
+
+$("enableStrategyAssistBtn").onclick = () => saveStrategyAssist(true);
+$("disableStrategyAssistBtn").onclick = () => saveStrategyAssist(false);
 
 async function openSettings() {
   try {

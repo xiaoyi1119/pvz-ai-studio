@@ -260,8 +260,12 @@ class PvZPlugin:
 
     def context_text(self, *, snapshot: bool = True) -> str:
         state = self.read_state()
+        # Strategy prose is injected by DeepSeekAgent only when the optional
+        # assist switch is enabled.  Never leak it through the ordinary model
+        # state, otherwise "off" would be cosmetic.
+        model_flow = {key: value for key, value in state["flow"].items() if key != "strategy"}
         compact = {
-            "game": state["game"], "flow": state["flow"], "cards": state["cards"],
+            "game": state["game"], "flow": model_flow, "cards": state["cards"],
             "occupied_cells": [cell for cell in state["board"] if not cell["empty"]],
             "zombies": state["zombies"], "items": state["items"],
             "grid_items": state["grid_items"], "lawn_mowers": state["lawn_mowers"],

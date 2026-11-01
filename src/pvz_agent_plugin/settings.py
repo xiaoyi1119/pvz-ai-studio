@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     plugin_host: str = "127.0.0.1"
     plugin_port: int = 8090
     agent_goal: str = "自主完成当前关卡"
+    strategy_assist_enabled: bool = Field(default=False, validation_alias="STRATEGY_ASSIST_ENABLED")
     channel_name: str = "小盆栽的植物园"
     channel_avatar_path: str = ""
     capture_window_title: str = Field(default="植物大战僵尸中文版", validation_alias="PVZ_WINDOW_TITLE")

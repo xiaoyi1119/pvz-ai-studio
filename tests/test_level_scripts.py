@@ -8,6 +8,7 @@ from pvz_agent_plugin.level_scripts import (
 def test_every_first_adventure_level_has_an_explicit_script():
     assert set(ADVENTURE_LEVEL_SCRIPTS) == set(range(1, 51))
     assert all(script.strategy for script in ADVENTURE_LEVEL_SCRIPTS.values())
+    assert max(len(script.strategy) for script in ADVENTURE_LEVEL_SCRIPTS.values()) <= 70
 
 
 def test_tutorial_conveyor_special_and_chooser_stages_are_separate():
@@ -33,3 +34,11 @@ def test_reward_followups_are_explicit():
     assert get_adventure_script(25).reward_flow == "store_intro"
     assert get_adventure_script(45).reward_flow == "zen_tutorial"
     assert get_adventure_script(50).reward_flow == "credits_note"
+
+
+def test_early_night_hints_do_not_recommend_future_unlocks():
+    assert "阳光菇" in get_adventure_script(11).strategy
+    assert "尚无阳光菇" in get_adventure_script(11).strategy
+    assert "墓碑吞噬者" not in get_adventure_script(11).strategy
+    assert "阳光菇" in get_adventure_script(12).strategy
+    assert "大喷菇" in get_adventure_script(13).strategy

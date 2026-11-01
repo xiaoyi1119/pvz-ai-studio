@@ -22,7 +22,13 @@ from .settings import Settings
 
 settings = Settings()
 plugin = PvZPlugin()
-agent = DeepSeekAgent(plugin, settings.deepseek_base_url, settings.deepseek_api_key, settings.deepseek_model)
+agent = DeepSeekAgent(
+    plugin,
+    settings.deepseek_base_url,
+    settings.deepseek_api_key,
+    settings.deepseek_model,
+    strategy_assist_enabled=settings.strategy_assist_enabled,
+)
 capture = GameCaptureHub(settings.capture_window_title, settings.capture_fps, settings.capture_quality)
 
 
@@ -66,6 +72,10 @@ class ProfileRequest(BaseModel):
     avatar_data_url: str = Field(default="", max_length=8_000_000)
 
 
+class StrategyAssistRequest(BaseModel):
+    enabled: bool
+
+
 ENV_PATH = Path(".env")
 PROFILE_DIR = Path("profile")
 _AVATAR_DATA_URL = re.compile(r"^data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=\r\n]+)$")
@@ -78,6 +88,23 @@ def _public_settings() -> dict[str, Any]:
         "goal": settings.agent_goal,
         "api_key_configured": bool(settings.deepseek_api_key.strip()),
     }
+
+
+def _public_strategy_assist() -> dict[str, Any]:
+    return {
+        "enabled": agent.strategy_assist_enabled,
+        "scope": ["整体玩法策略", "当前冒险关卡短提示"],
+        "visibility": "仅注入 AI 请求，不显示在直播主界面",
+    }
+
+
+def _save_strategy_assist(enabled: bool) -> dict[str, Any]:
+    settings.strategy_assist_enabled = bool(enabled)
+    agent.configure_strategy_assist(settings.strategy_assist_enabled)
+    _update_env_file(ENV_PATH, {
+        "STRATEGY_ASSIST_ENABLED": "true" if settings.strategy_assist_enabled else "false",
+    })
+    return _public_strategy_assist()
 
 
 def _update_env_file(path: Path, updates: dict[str, str]) -> None:
@@ -220,6 +247,16 @@ def api_settings():
 @app.get("/api/profile")
 def api_profile():
     return _public_profile()
+
+
+@app.get("/api/strategy-assist")
+def api_strategy_assist():
+    return _public_strategy_assist()
+
+
+@app.post("/api/strategy-assist")
+def api_strategy_assist_update(request: StrategyAssistRequest):
+    return safe(lambda: _save_strategy_assist(request.enabled))
 
 
 @app.get("/api/profile/avatar")

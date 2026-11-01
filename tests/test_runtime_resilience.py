@@ -44,6 +44,35 @@ def test_settings_update_preserves_unrelated_env_lines(tmp_path: Path):
     assert "AGENT_GOAL=完成当前关卡" in content
 
 
+def test_strategy_assist_persists_as_explicit_boolean(tmp_path, monkeypatch):
+    monkeypatch.setattr(service, "ENV_PATH", tmp_path / ".env")
+    configured = []
+    monkeypatch.setattr(service.agent, "strategy_assist_enabled", False)
+    def configure(enabled):
+        configured.append(enabled)
+        service.agent.strategy_assist_enabled = enabled
+    monkeypatch.setattr(service.agent, "configure_strategy_assist", configure)
+
+    result = service._save_strategy_assist(True)
+
+    assert configured == [True]
+    assert result["enabled"] is True
+    assert "STRATEGY_ASSIST_ENABLED=true" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_model_context_never_contains_level_strategy_by_itself(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+    plugin.read_state = lambda **kwargs: {
+        "game": {},
+        "flow": {"phase": "battle", "strategy": "hidden-level-strategy"},
+        "cards": [], "board": [], "zombies": [], "items": [], "grid_items": [],
+        "lawn_mowers": [], "lane_threats": [], "terrain": {}, "spawn_plan": [],
+        "seed_selection": {},
+    }
+
+    assert "hidden-level-strategy" not in plugin.context_text(snapshot=False)
+
+
 def test_model_discovery_returns_model_ids(monkeypatch):
     response = httpx.Response(200, json={"object": "list", "data": [
         {"id": "deepseek-v4-pro", "object": "model"},
