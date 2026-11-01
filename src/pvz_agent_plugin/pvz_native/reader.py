@@ -181,6 +181,9 @@ class GameState:
     game_mode: int = 0
     adventure_level: int = 0
     seed_chooser_ready: bool = False
+    seed_chooser_visible: bool = False
+    seed_chooser_age: int = 0
+    seed_chooser_state: int = -1
     sun: int = 0
     scene: int = -1
     scene_name: str = "未知"
@@ -270,7 +273,15 @@ class PvZStateReader:
         # 基础信息
         state.game_ui = self._mem.get_game_ui()
         state.game_mode = self._mem.get_game_mode()
-        state.seed_chooser_ready = bool(self._mem.get_select_card_ui_ptr())
+        chooser = self._mem.get_seed_chooser_status()
+        state.seed_chooser_visible = bool(chooser["visible"])
+        state.seed_chooser_age = int(chooser["age"])
+        state.seed_chooser_state = int(chooser["choose_state"])
+        # CHOOSE_NORMAL == 0.  View-lawn mode and the hidden intro instance
+        # must not be treated as an actionable selection screen.
+        state.seed_chooser_ready = (
+            state.seed_chooser_visible and state.seed_chooser_state == 0
+        )
 
         if not self._mem.main_object:
             return state

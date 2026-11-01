@@ -30,6 +30,13 @@ from .offsets import (
 
 # 选卡界面 UI 对象指针偏移，定义在 injector.py 中，此处直接用常量避免循环导入
 _SELECT_CARD_UI_OFFSET = 0x774
+# SeedChooserScreen inherits Sexy::Widget.  In the original 32-bit build,
+# Widget::mMouseVisible is at +0x59.  The chooser object is allocated before
+# the intro pan finishes, but CutScene::StartSeedChooser only flips this byte
+# when the screen is actually interactive.
+_SEED_CHOOSER_MOUSE_VISIBLE_OFFSET = 0x59
+_SEED_CHOOSER_AGE_OFFSET = 0xD1C
+_SEED_CHOOSER_STATE_OFFSET = 0xD38
 
 # ================================================================== #
 #  Windows API 声明
@@ -452,6 +459,29 @@ class PvZMemory:
             )
         except Exception:
             return 0
+
+    def get_seed_chooser_status(self) -> dict[str, int | bool]:
+        """Return whether the allocated seed chooser is actually interactive.
+
+        A non-null SelectCardUi pointer alone is insufficient: PvZ creates the
+        object during the level intro while it is still hidden.  Calling the
+        chooser functions in that interval can restart transitions or crash.
+        """
+        pointer = self.get_select_card_ui_ptr()
+        if not pointer:
+            return {"pointer": 0, "visible": False, "age": 0, "choose_state": -1}
+        try:
+            visible = self.read_bool(pointer + _SEED_CHOOSER_MOUSE_VISIBLE_OFFSET)
+            age = self.read_int(pointer + _SEED_CHOOSER_AGE_OFFSET)
+            choose_state = self.read_int(pointer + _SEED_CHOOSER_STATE_OFFSET)
+        except Exception:
+            return {"pointer": pointer, "visible": False, "age": 0, "choose_state": -1}
+        return {
+            "pointer": pointer,
+            "visible": visible,
+            "age": age,
+            "choose_state": choose_state,
+        }
 
     def get_sun(self) -> int:
         """读取当前阳光数量."""

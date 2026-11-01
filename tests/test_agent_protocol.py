@@ -162,3 +162,64 @@ def test_reward_flow_waits_for_fade_then_uses_local_script():
     assert agent.last_action["arguments"] == {"completed_level": 10, "step": 0}
     agent.close()
 
+
+def test_frozen_battle_clock_is_detected_after_ten_seconds():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    with patch("pvz_agent_plugin.agent.time.monotonic", side_effect=[100.0, 105.0, 111.0]):
+        assert agent._battle_clock_is_moving({"clock": 900}) is True
+        assert agent._battle_clock_is_moving({"clock": 900}) is True
+        assert agent._battle_clock_is_moving({"clock": 900}) is False
+    agent.close()
+
+
+def test_seed_selection_waits_for_stable_visible_ui():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    with patch("pvz_agent_plugin.agent.time.monotonic", side_effect=[100.0, 100.8, 101.1]):
+        assert agent._selection_ui_is_stable("adventure:08") is False
+        assert agent._selection_ui_is_stable("adventure:08") is False
+        assert agent._selection_ui_is_stable("adventure:08") is True
+    agent.close()
+
+
+def test_selection_turn_is_explicitly_decided_by_ai_not_plugin_preset():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action",
+            "arguments": json.dumps({
+                "action": "select_seeds", "seeds": [1, 3, 4, 5, 8, 11],
+                "selection_reason": "economy, defense and graves",
+            }),
+        }}]}}]
+    }
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(url, **kwargs):
+        captured["body"] = kwargs["json"]
+        return FakeResponse()
+
+    context = json.dumps({
+        "flow": {"phase": "seed_selection"},
+        "seed_selection": {
+            "required_count": 6,
+            "available_plants": [{"type": i, "name": f"plant-{i}"} for i in range(12)],
+            "decision_owner": "ai",
+        },
+        "spawn_plan": [],
+    })
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    with patch.object(agent._client, "post", fake_post):
+        call = agent._request_action(context)
+    assert call["seeds"] == [1, 3, 4, 5, 8, 11]
+    system = captured["body"]["messages"][0]["content"]
+    assert "plugin has no preset deck" in system
+    assert "Do not mechanically choose the first N" in system
+    assert captured["body"]["max_tokens"] == 384
+    agent.close()
+

@@ -29,6 +29,7 @@ PVZ_TOOL = {
                 "target_row": {"type": "integer", "minimum": 0, "maximum": 5},
                 "target_col": {"type": "integer", "minimum": 0, "maximum": 8},
                 "seeds": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 47}, "maxItems": 10},
+                "selection_reason": {"type": "string", "maxLength": 240},
                 "enabled": {"type": "boolean"},
                 "time": {"type": "number", "minimum": 0.1, "maximum": 10},
                 "status": {"type": "string", "enum": ["success", "failure"]},
@@ -55,11 +56,16 @@ class DeepSeekAgent:
         self.action_rejections = 0
         self._action_feedback: dict[str, Any] | None = None
         self._selection_submitted = False
+        self._selection_ready_key = ""
+        self._selection_ready_since = 0.0
         self._level_memories: dict[str, list[dict[str, Any]]] = {}
         self._last_adventure_level = 0
         self._reward_key = ""
         self._reward_step = 0
         self._reward_next_at = 0.0
+        self._battle_clock_value: int | None = None
+        self._battle_clock_changed_at = time.monotonic()
+        self._freeze_reported = False
         self._client = self._new_client()
 
     @property
@@ -83,6 +89,11 @@ class DeepSeekAgent:
         self.action_rejections = 0
         self._action_feedback = None
         self._selection_submitted = False
+        self._selection_ready_key = ""
+        self._selection_ready_since = 0.0
+        self._battle_clock_value = None
+        self._battle_clock_changed_at = time.monotonic()
+        self._freeze_reported = False
         self._thread = threading.Thread(target=self._run, name="pvz-agent", daemon=True)
         self._thread.start()
         self.plugin.emit("agent", "started", goal=self._goal, model=self.model, base_url=self.base_url)
@@ -124,22 +135,47 @@ class DeepSeekAgent:
                     self.last_error = ""
                     self._stop.wait(0.5)
                     continue
+                if flow.get("phase") == "battle" and flow.get("agent_enabled", False):
+                    if not self._battle_clock_is_moving(game):
+                        self.phase = "game_frozen"
+                        self.last_error = "游戏时钟超过 10 秒没有变化，已停止 Agent，防止继续请求或注入"
+                        if not self._freeze_reported:
+                            self.plugin.emit(
+                                "error", "game_clock_frozen", level="error",
+                                clock=game.get("clock"), level_key=flow.get("level_key"),
+                            )
+                            self._freeze_reported = True
+                        break
+                else:
+                    self._battle_clock_value = None
+                    self._battle_clock_changed_at = time.monotonic()
                 if flow.get("phase") == "reward":
                     self._advance_reward_locally(game, flow)
                     self._stop.wait(0.35)
                     continue
                 if flow and not flow.get("agent_enabled", False):
+                    self._reset_selection_stability()
                     self.phase = f"waiting_{flow.get('phase', 'manual_transition')}"
                     self.last_error = ""
                     self._stop.wait(0.5)
                     continue
                 if game.get("ui") != 2:
                     self._selection_submitted = False
+                    self._reset_selection_stability()
                 elif self._selection_submitted:
                     self.phase = "waiting_for_level_intro"
                     self.last_error = ""
                     self._stop.wait(0.5)
                     continue
+                if flow.get("phase") == "seed_selection":
+                    selection_key = str(flow.get("level_key") or game.get("level") or "chooser")
+                    if not self._selection_ui_is_stable(selection_key):
+                        self.phase = "waiting_seed_selection_ui_stable"
+                        self.last_error = ""
+                        self._stop.wait(0.25)
+                        continue
+                else:
+                    self._reset_selection_stability()
                 if not game.get("in_battle") and game.get("ui") != 2:
                     self.phase = "waiting_for_manual_transition"
                     self.last_error = ""
@@ -229,6 +265,29 @@ class DeepSeekAgent:
         self.phase = "stopped"
         self.plugin.emit("agent", "stopped", iteration=self.iteration, last_error=self.last_error)
 
+    def _battle_clock_is_moving(self, game: dict[str, Any]) -> bool:
+        clock = int(game.get("clock") or 0)
+        now = time.monotonic()
+        if self._battle_clock_value != clock:
+            self._battle_clock_value = clock
+            self._battle_clock_changed_at = now
+            self._freeze_reported = False
+            return True
+        return now - self._battle_clock_changed_at <= 10.0
+
+    def _selection_ui_is_stable(self, level_key: str) -> bool:
+        """Require a visible chooser to remain available before asking the AI."""
+        now = time.monotonic()
+        if self._selection_ready_key != level_key:
+            self._selection_ready_key = level_key
+            self._selection_ready_since = now
+            return False
+        return now - self._selection_ready_since >= 1.0
+
+    def _reset_selection_stability(self) -> None:
+        self._selection_ready_key = ""
+        self._selection_ready_since = 0.0
+
     def _advance_reward_locally(self, game: dict[str, Any], flow: dict[str, Any]) -> None:
         completed_level = self._last_adventure_level or int(game.get("level") or 0)
         key = f"adventure:{completed_level:02d}:{flow.get('reward_flow', 'next_level')}"
@@ -289,6 +348,11 @@ class DeepSeekAgent:
             del history[:-32]
 
     def _request_action(self, context: str, feedback: dict[str, Any] | None = None) -> dict[str, Any]:
+        try:
+            observed = json.loads(context)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            observed = {}
+        selection_turn = observed.get("flow", {}).get("phase") == "seed_selection"
         system = (
             "You are a Plants vs. Zombies 1 strategy agent. You receive exact structured memory state. "
             "Use exactly one pvz_action per turn. Never request screenshots, Windows mouse coordinates, keyboard input, or prose. "
@@ -302,13 +366,23 @@ class DeepSeekAgent:
             "Stacking is supported: lily pad/flower pot are support, pumpkin is armor, coffee bean wakes a sleeping mushroom. "
             "Upgrade cards must target their base plant; cob cannon targets the left of two adjacent kernel-pults. "
             "Use fire_cob for an existing cob cannon. Call select_seeds only when flow.phase is seed_selection. "
-            "Seed selection is part of your evaluation: you must choose the loadout yourself from seed_selection.available_types, "
-            "select exactly seed_selection.required_count distinct useful plants, and call select_seeds once. "
+            "Seed selection is part of your evaluation: the plugin has no preset deck and will never fill or replace your choices. "
+            "You must choose the loadout yourself from seed_selection.available_plants, select exactly "
+            "seed_selection.required_count distinct useful plants, and call select_seeds once. "
             "When flow.seed_system is conveyor, never call select_seeds; use the currently available card indexes and place_plant. "
+            "Conveyor cards do not consume sun; ignore their normal sun_cost. Only cards present in the cards array are valid—"
+            "never guess or use a missing/empty card index. "
             "Automatic collection is humanized and delayed; do not call collect_items while it is enabled. "
             "occupied_cells is authoritative. Never place a main-layer plant on an occupied main layer. "
             "If previous_action_feedback reports a rejected action, do not repeat that action at the same coordinates."
         )
+        if selection_turn:
+            system += (
+                " THIS TURN IS ONLY FOR AI SEED SELECTION. Analyze the full spawn_plan, terrain, scene, costs and exact slot count. "
+                "Build a functional deck with economy, sustained damage, required terrain support, threat counters and emergency control. "
+                "Do not mechanically choose the first N plant IDs, and do not copy a prior deck unless the current level evidence justifies it. "
+                "Return action=select_seeds and include a concise selection_reason proving why these exact cards fit this level."
+            )
         user_content = f"goal: {self._goal}\n<game_state>\n{context}\n</game_state>"
         if feedback:
             user_content += "\n<previous_action_feedback>\n" + json.dumps(
@@ -323,7 +397,7 @@ class DeepSeekAgent:
             "tools": [PVZ_TOOL],
             "tool_choice": "required",
             "thinking": {"type": "disabled"},
-            "max_tokens": 256,
+            "max_tokens": 384 if selection_turn else 256,
             "temperature": 0.2,
         }
         request_started = time.perf_counter()

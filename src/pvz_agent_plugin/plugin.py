@@ -11,7 +11,7 @@ from .audit import AuditLog
 from .flow import classify_flow
 from .level_scripts import available_adventure_seed_types, get_adventure_script
 from .pvz_native import PvZCodeInjector, PvZMemory, PvZStateReader
-from .pvz_native.offsets import PLANT_NAMES, PLANT_UPGRADE_MAP
+from .pvz_native.offsets import PLANT_NAMES, PLANT_SUN_COST, PLANT_UPGRADE_MAP
 from .rules import build_board, check_placement, plant_layer
 
 
@@ -111,17 +111,32 @@ class PvZPlugin:
             if state.game_ui != 2:
                 self._selection_submitted = False
 
+        flow = classify_flow(
+            app_scene=state.game_ui,
+            game_mode=state.game_mode,
+            adventure_level=state.adventure_level,
+            background=state.scene,
+            seed_chooser_ready=state.seed_chooser_ready,
+        ).to_dict()
+        conveyor = flow["seed_system"] == "conveyor"
+
         cards = []
         for seed in state.seeds:
             actual_type = seed.imitator_type if seed.imitator_type >= 0 else seed.plant_type
+            # Conveyor banks keep unused array slots at type -1.  They are not
+            # cards and must never be exposed to the model as actionable slots.
+            if actual_type not in range(48):
+                continue
             cards.append({
                 "index": seed.index, "type": seed.plant_type, "actual_type": actual_type,
                 "name": seed.name, "cost": seed.sun_cost,
                 "cooldown_cs": seed.cd, "cooldown_seconds": round(seed.cd / 100, 2),
                 "cooldown": round(seed.cd / 100, 2),
                 "initial_cooldown_cs": seed.initial_cd, "cooldown_progress": round(seed.cd_progress, 3),
-                "usable_flag": seed.is_usable, "ready": seed.cd == 0 and state.sun >= seed.sun_cost,
-                "affordable": state.sun >= seed.sun_cost, "imitator_type": seed.imitator_type,
+                "usable_flag": seed.is_usable,
+                "ready": seed.cd == 0 and (conveyor or state.sun >= seed.sun_cost),
+                "affordable": conveyor or state.sun >= seed.sun_cost,
+                "requires_sun": not conveyor, "imitator_type": seed.imitator_type,
                 "ui_rect": {"x": seed.x, "y": seed.y, "width": seed.width, "height": seed.height},
             })
 
@@ -189,14 +204,10 @@ class PvZPlugin:
             }
             for index, wave in enumerate(state.wave_zombies)
         ]
-        flow = classify_flow(
-            app_scene=state.game_ui,
-            game_mode=state.game_mode,
-            adventure_level=state.adventure_level,
-            background=state.scene,
-            seed_chooser_ready=state.seed_chooser_ready,
-        ).to_dict()
-
+        available_seed_types = (
+            available_adventure_seed_types(state.adventure_level)
+            if state.game_mode == 0 and flow["seed_system"] == "chooser" else []
+        )
         result = {
             "schema_version": self.schema_version, "captured_at": time.time(),
             "read_duration_ms": round((time.perf_counter() - started) * 1000, 2),
@@ -219,11 +230,19 @@ class PvZPlugin:
             "board_rows": board_rows, "flow": flow,
             "seed_selection": {
                 "required_count": len(state.seeds) or 6,
-                "available_types": (
-                    available_adventure_seed_types(state.adventure_level)
-                    if state.game_mode == 0 and flow["seed_system"] == "chooser" else []
-                ),
+                "available_types": available_seed_types,
+                "available_plants": [
+                    {
+                        "type": plant_type,
+                        "name": PLANT_NAMES.get(plant_type, str(plant_type)),
+                        "cost": PLANT_SUN_COST.get(plant_type, 0),
+                    }
+                    for plant_type in available_seed_types
+                ],
                 "decision_owner": "ai",
+                "plugin_policy": "validate_and_execute_only_no_presets_no_random_fill",
+                "ui_visible": state.seed_chooser_visible,
+                "ui_age": state.seed_chooser_age,
             },
             "cards": cards, "plants": plants, "zombies": zombies,
             "items": items, "grid_items": grid_items, "lawn_mowers": mowers,
@@ -323,10 +342,20 @@ class PvZPlugin:
                     raise ValueError(f"卡片序号不存在: {card_index}")
                 seed = state.seeds[card_index]
                 plant_type = seed.imitator_type if seed.imitator_type >= 0 else seed.plant_type
+                if plant_type not in range(48):
+                    raise ValueError(f"卡槽 {card_index} 当前为空，不能执行种植")
+                flow = classify_flow(
+                    app_scene=state.game_ui,
+                    game_mode=state.game_mode,
+                    adventure_level=state.adventure_level,
+                    background=state.scene,
+                    seed_chooser_ready=state.seed_chooser_ready,
+                )
+                conveyor = flow.seed_system == "conveyor"
                 check = check_placement(plant_type, row, col, state.plants)
                 if not check.allowed:
                     raise ValueError(check.reason)
-                if seed.cd == 0 and state.sun >= seed.sun_cost:
+                if seed.cd == 0 and (conveyor or state.sun >= seed.sun_cost):
                     before_types = [p.plant_type for p in state.plants if p.row == row and p.col in {col, col + 1}]
                     self.emit("action", "placement_precheck", action_id=action_id, card_index=card_index,
                               plant_type=plant_type, plant=seed.name, row=row, col=col, sun=state.sun,
@@ -353,10 +382,12 @@ class PvZPlugin:
                         self._injector.mouse_click(grid_x, grid_y)
                     break
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"等待 {seed.name} 冷却或阳光超时 (cd={seed.cd}, sun={state.sun}/{seed.sun_cost})")
+                requirement = "传送带卡片" if conveyor else f"sun={state.sun}/{seed.sun_cost}"
+                raise TimeoutError(f"等待 {seed.name} 可用超时 (cd={seed.cd}, {requirement})")
             if not waiting_logged:
                 self.emit("action", "waiting_resources", action_id=action_id, card_index=card_index,
-                          plant=seed.name, cooldown_cs=seed.cd, sun=state.sun, required_sun=seed.sun_cost)
+                          plant=seed.name, cooldown_cs=seed.cd, sun=state.sun,
+                          required_sun=0 if conveyor else seed.sun_cost, conveyor=conveyor)
                 waiting_logged = True
             time.sleep(0.1)
 
@@ -366,8 +397,12 @@ class PvZPlugin:
         after = [p for p in after_state.plants if p.row == row and p.col in {col, col + 1}]
         accepted = self._verify_placement(plant_type, row, col, before_types, after)
         if card_index < len(after_state.seeds):
-            accepted = accepted or after_state.seeds[card_index].cd > 0
-            if seed.sun_cost > 0:
+            after_card_type = after_state.seeds[card_index].plant_type
+            if conveyor:
+                accepted = accepted or after_card_type != seed.plant_type
+            else:
+                accepted = accepted or after_state.seeds[card_index].cd > 0
+            if not conveyor and seed.sun_cost > 0:
                 accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted and interaction == "window_drag":
             self.emit(
@@ -386,10 +421,19 @@ class PvZPlugin:
             after = [p for p in after_state.plants if p.row == row and p.col in {col, col + 1}]
             accepted = self._verify_placement(plant_type, row, col, before_types, after)
             if card_index < len(after_state.seeds):
-                accepted = accepted or after_state.seeds[card_index].cd > 0
-                if seed.sun_cost > 0:
+                after_card_type = after_state.seeds[card_index].plant_type
+                if conveyor:
+                    accepted = accepted or after_card_type != seed.plant_type
+                else:
+                    accepted = accepted or after_state.seeds[card_index].cd > 0
+                if not conveyor and seed.sun_cost > 0:
                     accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted:
+            if conveyor:
+                raise RuntimeError(
+                    f"传送带没有接受种植动作: {seed.name} → ({row},{col})；"
+                    "为防止空槽或卡槽移动造成崩溃，已禁用强制内存种植回退"
+                )
             # Some localized 1.0.0.1051 builds ignore background window mouse
             # messages even though memory state and coordinates are valid. Keep
             # human-like drag/click as the primary path, then use the game's own
@@ -468,7 +512,7 @@ class PvZPlugin:
                 game_mode=state.game_mode,
                 adventure_level=state.adventure_level,
                 background=state.scene,
-                seed_chooser_ready=bool(self._memory.get_select_card_ui_ptr()),
+                seed_chooser_ready=state.seed_chooser_ready,
             )
             if state.is_paused:
                 raise ValueError("游戏已暂停，请先在游戏内继续后再选卡")
@@ -480,10 +524,12 @@ class PvZPlugin:
                     "status": "waiting", "action": "select_seeds", "action_id": action_id,
                     "reason": "selection_already_submitted",
                 }
-            if not self._memory.get_select_card_ui_ptr():
-                raise ValueError("选卡界面仍在加载，请稍后再试")
+            if not state.seed_chooser_ready:
+                raise ValueError("选卡界面尚未完全出现或不可操作，请稍后再试")
             required_count = len(state.seeds)
-            if required_count and len(seeds) != required_count:
+            if not required_count:
+                raise ValueError("暂时读不到本关卡槽数量，插件不会代选或随机补卡")
+            if len(seeds) != required_count:
                 raise ValueError(f"本关需要由 AI 选择 {required_count} 张不同植物卡，当前提交 {len(seeds)} 张")
             if len(set(seeds)) != len(seeds):
                 raise ValueError("选卡不能包含重复植物")
@@ -497,12 +543,6 @@ class PvZPlugin:
                 self.emit("action", "seed_selected", action_id=action_id, plant_type=seed,
                           plant=PLANT_NAMES.get(seed, str(seed)))
                 time.sleep(random.uniform(0.35, 0.65))
-            # Old callers with no readable packet count retain the safe fill;
-            # normal AI selection submits the exact bank size and stays fully
-            # attributable to the model rather than random completion.
-            if not required_count:
-                self._injector.pick_random_seeds()
-                time.sleep(random.uniform(0.45, 0.8))
             self._injector.rock()
             self._selection_submitted = True
         return {"status": "ok", "action": "select_seeds", "action_id": action_id,

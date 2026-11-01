@@ -4,9 +4,11 @@ from pathlib import Path
 import base64
 
 import httpx
+import pytest
 
 from pvz_agent_plugin.capture import GameCaptureHub
 from pvz_agent_plugin.plugin import PvZPlugin
+from pvz_agent_plugin.pvz_native.reader import GameState, PlantInfo, SeedInfo
 from pvz_agent_plugin import service
 from pvz_agent_plugin.service import ModelsRequest, ProfileRequest, SettingsRequest, _update_env_file
 
@@ -136,8 +138,11 @@ def test_select_seeds_is_idempotent_during_level_intro(tmp_path):
 
     class Reader:
         def read_state(self):
-            from pvz_agent_plugin.pvz_native.reader import GameState
-            return GameState(game_ui=2, is_paused=False)
+            return GameState(
+                game_ui=2, game_mode=0, adventure_level=8,
+                is_paused=False, seed_chooser_ready=True,
+                seed_chooser_visible=True, seeds=[_seed(0, 0)],
+            )
 
     injector = Injector()
     plugin._memory = Memory()
@@ -151,4 +156,129 @@ def test_select_seeds_is_idempotent_during_level_intro(tmp_path):
         "reason": "selection_already_submitted",
     }
     assert injector.rocks == 1
+
+
+def test_select_seeds_rejects_allocated_but_hidden_chooser(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Injector:
+        def choose_card(self, seed):
+            raise AssertionError("hidden chooser must never be injected")
+
+    class Reader:
+        def read_state(self):
+            return GameState(
+                game_ui=2, game_mode=0, adventure_level=8,
+                seed_chooser_ready=False, seed_chooser_visible=False,
+                seeds=[_seed(0, 0)],
+            )
+
+    plugin._memory = Memory()
+    plugin._injector = Injector()
+    plugin._reader = Reader()
+    with pytest.raises(ValueError, match="当前不在选卡界面"):
+        plugin.select_seeds([0])
+
+
+def _seed(index: int, plant_type: int, *, cost: int = 0) -> SeedInfo:
+    return SeedInfo(
+        index=index, plant_type=plant_type, name=f"type-{plant_type}",
+        sun_cost=cost, cd=0, initial_cd=0, is_usable=True,
+        imitator_type=-1, x=100 + index * 50, y=8, width=50, height=70,
+    )
+
+
+def test_conveyor_rejects_empty_negative_card_before_any_injection(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Reader:
+        def read_state(self):
+            return GameState(
+                game_ui=3, game_mode=0, adventure_level=10,
+                seeds=[_seed(0, -1)],
+            )
+
+    class Injector:
+        def __getattr__(self, name):
+            raise AssertionError(f"empty conveyor slot must not call injector.{name}")
+
+    plugin._memory = Memory()
+    plugin._reader = Reader()
+    plugin._injector = Injector()
+    with pytest.raises(ValueError, match="当前为空"):
+        plugin.place_plant(0, 2, 4)
+
+
+def test_conveyor_card_can_be_planted_with_zero_sun(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Reader:
+        planted = False
+
+        def read_state(self):
+            plants = []
+            if self.planted:
+                plants = [PlantInfo(
+                    index=0, plant_type=3, name="坚果", row=2, col=4,
+                    hp=4000, hp_max=4000, state=0,
+                    is_sleeping=False, is_crushed=False,
+                )]
+            return GameState(
+                game_ui=3, game_mode=0, adventure_level=10, sun=0,
+                seeds=[_seed(0, 3, cost=50)], plants=plants,
+            )
+
+    reader = Reader()
+
+    class Injector:
+        def release_mouse(self):
+            return None
+
+        def grid_to_pixel(self, row, col):
+            return 400, 300
+
+        def window_drag(self, *args, **kwargs):
+            reader.planted = True
+
+    plugin._memory = Memory()
+    plugin._reader = reader
+    plugin._injector = Injector()
+    result = plugin.place_plant(0, 2, 4)
+    assert result["status"] == "ok"
+    assert result["plant_type"] == 3
+
+
+def test_state_hides_empty_conveyor_slots_from_ai(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Reader:
+        def read_state(self):
+            return GameState(
+                game_ui=3, game_mode=0, adventure_level=10, sun=0,
+                seeds=[_seed(0, 3, cost=50), _seed(1, -1)],
+            )
+
+    plugin._memory = Memory()
+    plugin._reader = Reader()
+    plugin._injector = object()
+    state = plugin.read_state()
+    assert [card["index"] for card in state["cards"]] == [0]
+    assert state["cards"][0]["ready"] is True
+    assert state["cards"][0]["requires_sun"] is False
 

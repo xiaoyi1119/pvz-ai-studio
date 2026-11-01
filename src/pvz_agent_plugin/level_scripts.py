@@ -34,7 +34,7 @@ ADVENTURE_LEVEL_SCRIPTS = {
     8: _script(8, "day", "chooser", "首次自由选卡；经济、持续输出、阻挡和应急爆发保持均衡"),
     9: _script(9, "day", "chooser", "针对铁桶等高血量目标保留爆发和坚果，输出放后排"),
     10: _script(10, "day_miniboss", "conveyor", "传送带卡片及时消耗，优先补空路并把防御植物放前排", "zombie_note"),
-    11: _script(11, "night", "chooser", "夜间以阳光菇经济，小喷菇低成本铺路，墓碑吞噬者清关键墓碑"),
+    11: _script(11, "night", "chooser", "首个夜间关尚未解锁阳光菇；用向日葵维持经济，小喷菇低成本铺路，墓碑吞噬者清关键墓碑"),
     12: _script(12, "night", "chooser", "夜间经济优先，魅惑菇用于高威胁单体，保持每路持续输出"),
     13: _script(13, "night", "chooser", "胆小菇放后排并用坚果保护，墓碑多时保留墓碑吞噬者"),
     14: _script(14, "night", "chooser", "寒冰菇作为全场控制，毁灭菇只在大波且能接受弹坑时使用"),
