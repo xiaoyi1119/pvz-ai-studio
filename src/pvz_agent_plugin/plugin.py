@@ -181,6 +181,49 @@ class PvZPlugin:
                 "types": sorted({z["name"] for z in lane}),
             })
 
+        # Give the model the same conservative legality result used by the
+        # executor.  This prevents it from repeatedly cross-joining graves,
+        # occupied layers and cards from a large raw state document.
+        for card in cards:
+            plant_type = int(card["actual_type"])
+            card["legal_targets"] = [
+                [row, col]
+                for row in range(board_rows)
+                for col in range(9)
+                if check_placement(
+                    plant_type, row, col, state.plants, state.grid_items
+                ).allowed
+            ]
+
+        board = build_board(state.plants)
+        grave_cells = [
+            [item.row, item.col] for item in state.grid_items
+            if item.item_type == 1 and item.row in range(board_rows)
+        ]
+        shovel_targets = [
+            {
+                "cell": [cell["row"], cell["col"]],
+                "plants": [
+                    plant["name"]
+                    for layer in cell["layers"].values()
+                    for plant in layer
+                ],
+            }
+            for cell in board
+            if cell["row"] in range(board_rows) and not cell["empty"]
+        ]
+        decision_board = {
+            "coordinate_format": "[row,col]",
+            "grave_cells": grave_cells,
+            "normal_main_open_cells": [
+                [row, col]
+                for row in range(board_rows)
+                for col in range(9)
+                if check_placement(0, row, col, state.plants, state.grid_items).allowed
+            ],
+            "shovel_targets": shovel_targets,
+        }
+
         terrain_names = {0: "none", 1: "land", 2: "water", 3: "roof"}
         terrain = {
             "rows": [
@@ -248,7 +291,8 @@ class PvZPlugin:
             },
             "cards": cards, "plants": plants, "zombies": zombies,
             "items": items, "grid_items": grid_items, "lawn_mowers": mowers,
-            "board": build_board(state.plants), "lane_threats": lane_threats,
+            "board": board, "decision_board": decision_board,
+            "lane_threats": lane_threats,
             "terrain": terrain, "spawn_plan": spawn_plan,
             "counts": {
                 "cards": len(cards), "plants": len(plants), "zombies": len(zombies),
@@ -266,14 +310,53 @@ class PvZPlugin:
         # assist switch is enabled.  Never leak it through the ordinary model
         # state, otherwise "off" would be cosmetic.
         model_flow = {key: value for key, value in state["flow"].items() if key != "strategy"}
+        occupied_cells = []
+        for cell in state["board"]:
+            if cell["empty"]:
+                continue
+            occupied_cells.append({
+                "row": cell["row"], "col": cell["col"],
+                "layers": {
+                    layer: [
+                        {
+                            "type": plant["type"], "name": plant["name"],
+                            "hp_ratio": plant["hp_ratio"],
+                            "sleeping": plant["sleeping"],
+                        }
+                        for plant in values
+                    ]
+                    for layer, values in cell["layers"].items() if values
+                },
+            })
         compact = {
             "game": state["game"], "flow": model_flow, "cards": state["cards"],
-            "occupied_cells": [cell for cell in state["board"] if not cell["empty"]],
-            "zombies": state["zombies"], "items": state["items"],
-            "grid_items": state["grid_items"], "lawn_mowers": state["lawn_mowers"],
-            "lane_threats": state["lane_threats"], "terrain": state["terrain"],
-            "spawn_plan": state["spawn_plan"], "seed_selection": state["seed_selection"],
+            "decision_board": state.get("decision_board", {}),
+            "occupied_cells": occupied_cells,
+            "zombies": [
+                {
+                    key: zombie[key] for key in (
+                        "name", "row", "x", "estimated_col", "hp_total",
+                        "eating", "slowed_for", "frozen_for",
+                    )
+                }
+                for zombie in state["zombies"]
+            ],
+            "grid_items": state["grid_items"],
+            "lawn_mowers": state["lawn_mowers"],
+            "lane_threats": state["lane_threats"],
+            "terrain_rows": state["terrain"].get("rows", []),
         }
+        if model_flow.get("phase") == "seed_selection":
+            compact["spawn_plan"] = state["spawn_plan"]
+            compact["seed_selection"] = state["seed_selection"]
+            compact["terrain"] = state["terrain"]
+        else:
+            current_wave = max(0, int(state["game"].get("wave") or 0))
+            future = state["spawn_plan"][current_wave:]
+            remaining_names = [name for wave in future for name in wave["names"]]
+            compact["remaining_spawn_summary"] = {
+                name: remaining_names.count(name) for name in sorted(set(remaining_names))
+            }
         text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         if snapshot:
             self._audit.snapshot(compact, reason="agent_observation")
@@ -364,7 +447,10 @@ class PvZPlugin:
                 if not check.allowed:
                     raise ValueError(check.reason)
                 if seed.is_ready and (conveyor or state.sun >= seed.sun_cost):
-                    before_types = [p.plant_type for p in state.plants if p.row == row and p.col in {col, col + 1}]
+                    before_types = [
+                        p.plant_type for p in state.plants
+                        if p.row == row and p.col == col
+                    ]
                     self.emit("action", "placement_precheck", action_id=action_id, card_index=card_index,
                               plant_type=plant_type, plant=seed.name, row=row, col=col, sun=state.sun,
                               cost=seed.sun_cost, check=check.as_dict(), before_types=before_types)
@@ -405,7 +491,7 @@ class PvZPlugin:
         time.sleep(0.35)
         assert self._reader
         after_state = self._reader.read_state()
-        after = [p for p in after_state.plants if p.row == row and p.col in {col, col + 1}]
+        after = [p for p in after_state.plants if p.row == row and p.col == col]
         accepted = self._verify_placement(plant_type, row, col, before_types, after)
         if card_index < len(after_state.seeds):
             after_card_type = after_state.seeds[card_index].plant_type
@@ -429,7 +515,7 @@ class PvZPlugin:
             interaction = "native_click_fallback"
             time.sleep(0.45)
             after_state = self._reader.read_state()
-            after = [p for p in after_state.plants if p.row == row and p.col in {col, col + 1}]
+            after = [p for p in after_state.plants if p.row == row and p.col == col]
             accepted = self._verify_placement(plant_type, row, col, before_types, after)
             if card_index < len(after_state.seeds):
                 after_card_type = after_state.seeds[card_index].plant_type
@@ -449,6 +535,35 @@ class PvZPlugin:
             # messages even though memory state and coordinates are valid. Keep
             # human-like drag/click as the primary path, then use the game's own
             # planting routine as a resource-constrained reliability fallback.
+            # The UI attempts take time.  Re-read and revalidate immediately
+            # before injection so a level transition cannot turn a valid card
+            # or target into stale memory.
+            with self._lock:
+                assert self._reader
+                current = self._reader.read_state()
+                current_flow = classify_flow(
+                    app_scene=current.game_ui,
+                    game_mode=current.game_mode,
+                    adventure_level=current.adventure_level,
+                    background=current.scene,
+                    seed_chooser_ready=current.seed_chooser_ready,
+                )
+                if current_flow.phase != "battle":
+                    raise RuntimeError("关卡状态已变化，已取消过期的内存种植动作")
+                if card_index not in range(len(current.seeds)):
+                    raise RuntimeError("关卡或卡槽已变化，已取消过期的内存种植动作")
+                current_seed = current.seeds[card_index]
+                current_type = (
+                    current_seed.imitator_type
+                    if current_seed.imitator_type >= 0 else current_seed.plant_type
+                )
+                if current_type != plant_type:
+                    raise RuntimeError("卡槽内容已变化，已取消过期的内存种植动作")
+                current_check = check_placement(
+                    plant_type, row, col, current.plants, current.grid_items
+                )
+                if not current_check.allowed:
+                    raise ValueError(current_check.reason)
             self.emit(
                 "action", "native_plant_fallback", level="warning",
                 action_id=action_id, plant=seed.name, row=row, col=col,
@@ -464,7 +579,7 @@ class PvZPlugin:
             interaction = "native_plant_fallback"
             time.sleep(0.2)
             after_state = self._reader.read_state()
-            after = [p for p in after_state.plants if p.row == row and p.col in {col, col + 1}]
+            after = [p for p in after_state.plants if p.row == row and p.col == col]
             accepted = self._verify_placement(plant_type, row, col, before_types, after)
         if not accepted:
             raise RuntimeError(f"游戏未接受种植动作: {seed.name} → ({row},{col})")

@@ -8,7 +8,7 @@ import pytest
 
 from pvz_agent_plugin.capture import GameCaptureHub
 from pvz_agent_plugin.plugin import PvZPlugin
-from pvz_agent_plugin.pvz_native.reader import GameState, PlantInfo, SeedInfo
+from pvz_agent_plugin.pvz_native.reader import GameState, GridItemInfo, PlantInfo, SeedInfo
 from pvz_agent_plugin import service
 from pvz_agent_plugin.service import ModelsRequest, ProfileRequest, SettingsRequest, _update_env_file
 
@@ -331,4 +331,59 @@ def test_state_hides_empty_conveyor_slots_from_ai(tmp_path):
     assert [card["index"] for card in state["cards"]] == [0]
     assert state["cards"][0]["ready"] is True
     assert state["cards"][0]["requires_sun"] is False
+
+
+def test_state_exposes_authoritative_legal_targets_for_graves_and_occupied_cells(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Reader:
+        def read_state(self):
+            return GameState(
+                game_ui=3, game_mode=0, adventure_level=14, scene=1, sun=500,
+                seeds=[_seed(0, 8), _seed(1, 11, cost=75)],
+                plants=[PlantInfo(
+                    index=0, plant_type=9, name="阳光菇", row=0, col=0,
+                    hp=300, hp_max=300, state=0, is_sleeping=False, is_crushed=False,
+                )],
+                grid_items=[GridItemInfo(
+                    index=0, item_type=1, name="墓碑", row=2, col=4, value=0,
+                )],
+            )
+
+    plugin._memory = Memory()
+    plugin._reader = Reader()
+    plugin._injector = object()
+    state = plugin.read_state()
+    puff_targets = state["cards"][0]["legal_targets"]
+    grave_buster_targets = state["cards"][1]["legal_targets"]
+
+    assert [0, 0] not in puff_targets
+    assert [2, 4] not in puff_targets
+    assert grave_buster_targets == [[2, 4]]
+    assert state["decision_board"]["grave_cells"] == [[2, 4]]
+    assert {"cell": [0, 0], "plants": ["阳光菇"]} in state["decision_board"]["shovel_targets"]
+
+
+def test_battle_context_is_compact_and_keeps_decision_fields(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+    plugin.read_state = lambda **kwargs: {
+        "game": {"wave": 0}, "flow": {"phase": "battle", "strategy": "hidden"},
+        "cards": [{"index": 0, "legal_targets": [[1, 2]]}],
+        "board": [], "zombies": [], "grid_items": [], "lawn_mowers": [],
+        "lane_threats": [], "terrain": {"rows": []},
+        "decision_board": {"grave_cells": [[2, 4]]},
+        "spawn_plan": [{"wave": 1, "names": ["普通僵尸", "普通僵尸"]}],
+        "seed_selection": {},
+    }
+
+    context = __import__("json").loads(plugin.context_text(snapshot=False))
+    assert context["cards"][0]["legal_targets"] == [[1, 2]]
+    assert context["decision_board"]["grave_cells"] == [[2, 4]]
+    assert context["remaining_spawn_summary"] == {"普通僵尸": 2}
+    assert "spawn_plan" not in context
+    assert "strategy" not in context["flow"]
 

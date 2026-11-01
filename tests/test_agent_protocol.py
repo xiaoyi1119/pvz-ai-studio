@@ -317,3 +317,76 @@ def test_level_memory_keeps_plant_identity_for_repetition_detection():
     assert memory["plant_type"] == 8
     agent.close()
 
+
+def test_level_memory_compacts_history_and_summarizes_rejected_targets():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    for iteration in range(12):
+        agent.iteration = iteration
+        agent._remember_level_action(
+            "adventure:14", "place_plant", {"card_index": 0, "row": 2, "col": 4},
+            "rejected", {"error": "目标格有墓碑"},
+        )
+    context, _ = agent._context_with_level_memory({
+        "game": {"level_key": "adventure:14"},
+        "flow": {"level_key": "adventure:14"},
+    })
+    memory = json.loads(context)["level_memory"]
+    assert len(memory["recent_actions"]) == 8
+    assert memory["rejected_targets"] == {"place_plant@[2,4]": 12}
+    agent.close()
+
+
+def test_strategy_snapshot_recommends_safe_grave_and_planned_shovel_replacement():
+    observed = {
+        "game": {"level": 14, "board_rows": 5},
+        "occupied_cells": [
+            {"row": 0, "col": 2, "layers": {"main": [{"name": "小喷菇", "type": 8}]}},
+            {"row": 0, "col": 1, "layers": {"main": [{"name": "大喷菇", "type": 10}]}},
+        ],
+        "cards": [
+            {"index": 2, "name": "大喷菇", "actual_type": 10, "ready": True},
+            {"index": 3, "name": "墓碑吞噬者", "actual_type": 11, "ready": True},
+        ],
+        "lane_threats": [
+            {"row": 0, "count": 0, "nearest_col": None, "eating_count": 0},
+            {"row": 2, "count": 1, "nearest_col": 6, "eating_count": 0},
+        ],
+        "decision_board": {"grave_cells": [[2, 5], [4, 3]]},
+    }
+    snapshot = DeepSeekAgent._strategy_snapshot(observed)
+    assert "可计划替换：小喷菇[[0, 2]]" in snapshot
+    assert "2:大喷菇" in snapshot
+    assert "安全清墓碑候选：[[4, 3], [2, 5]]" in snapshot
+
+
+def test_tool_protocol_requires_card_legal_targets_and_shovel_replacement_plan():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action", "arguments": '{"action":"wait","time":1}'
+        }}]}}]
+    }
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(url, **kwargs):
+        captured["body"] = kwargs["json"]
+        return FakeResponse()
+
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent.configure_strategy_assist(True)
+    with patch.object(agent._client, "post", fake_post):
+        agent._request_action(json.dumps({"flow": {"phase": "battle"}, "game": {}}))
+    system = captured["body"]["messages"][0]["content"]
+    properties = captured["body"]["tools"][0]["function"]["parameters"]["properties"]
+    assert "MUST appear in that exact card's legal_targets" in system
+    assert "replacement_card_index" in system
+    assert "replacement_card_index" in properties
+    assert "decision_reason" in properties
+    agent.close()
+

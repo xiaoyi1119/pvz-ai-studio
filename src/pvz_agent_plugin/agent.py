@@ -33,6 +33,8 @@ PVZ_TOOL = {
                 "target_col": {"type": "integer", "minimum": 0, "maximum": 8},
                 "seeds": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 47}, "maxItems": 10},
                 "selection_reason": {"type": "string", "maxLength": 240},
+                "decision_reason": {"type": "string", "maxLength": 180},
+                "replacement_card_index": {"type": "integer", "minimum": 0},
                 "enabled": {"type": "boolean"},
                 "time": {"type": "number", "minimum": 0.1, "maximum": 10},
                 "status": {"type": "string", "enum": ["success", "failure"]},
@@ -221,12 +223,17 @@ class DeepSeekAgent:
                     self.action_rejections += 1
                     self.system_failures = 0
                     self.last_error = str(exc)
+                    is_injection_timeout = "远程线程执行超时" in str(exc)
                     self._action_feedback = {
                         "status": "rejected",
                         "action": action,
                         "arguments": call,
                         "error": str(exc),
-                        "instruction": "Do not repeat the same invalid action. Re-read occupied_cells and choose a legal alternative.",
+                        "instruction": (
+                            "The native action timed out. Re-observe the current phase and cards; never reuse a stale card index."
+                            if is_injection_timeout else
+                            "Do not repeat the same invalid action. Use the selected card's legal_targets and choose a legal alternative."
+                        ),
                     }
                     self.last_action = {
                         "action": action, "arguments": call,
@@ -241,8 +248,8 @@ class DeepSeekAgent:
                         action_rejections=self.action_rejections,
                         duration_ms=round((time.perf_counter() - iteration_started) * 1000, 2),
                     )
-                    self.phase = "recovering_action"
-                    self._stop.wait(0.1)
+                    self.phase = "recovering_injection" if is_injection_timeout else "recovering_action"
+                    self._stop.wait(1.0 if is_injection_timeout else 0.15)
                     continue
                 self.last_action = {"action": action, "arguments": call, "result": result}
                 self._remember_level_action(level_key, action, call, result.get("status", "ok"), result)
@@ -333,12 +340,22 @@ class DeepSeekAgent:
         flow = observed.get("flow", {})
         game = observed.get("game", {})
         level_key = str(flow.get("level_key") or game.get("level_key") or "unknown")
-        history = self._level_memories.get(level_key, [])[-16:]
+        all_history = self._level_memories.get(level_key, [])
+        history = all_history[-8:]
+        rejected_targets: Counter[str] = Counter()
+        for record in all_history:
+            if record.get("status") != "rejected":
+                continue
+            arguments = record.get("arguments", {})
+            if "row" in arguments and "col" in arguments:
+                key = f"{record.get('action')}@[{arguments['row']},{arguments['col']}]"
+                rejected_targets[key] += 1
         enriched = dict(observed)
         enriched["level_memory"] = {
             "level_key": level_key,
             "scope": "current_level_only",
             "recent_actions": history,
+            "rejected_targets": dict(rejected_targets.most_common(8)),
         }
         return json.dumps(enriched, ensure_ascii=False, separators=(",", ":")), level_key
 
@@ -353,7 +370,10 @@ class DeepSeekAgent:
         history = self._level_memories.setdefault(level_key, [])
         compact_result = {
             key: result[key]
-            for key in ("status", "reason", "error", "plant", "plant_type", "row", "col", "verification")
+            for key in (
+                "status", "reason", "error", "plant", "plant_type", "row", "col",
+                "removed", "remaining", "verification",
+            )
             if key in result
         }
         history.append({
@@ -384,10 +404,86 @@ class DeepSeekAgent:
         for row in range(rows):
             names = [str(p.get("name")) for p in plants if p.get("row") == row]
             lane_text.append(f"{row}:{'/'.join(names) if names else '空'}")
-        lines = [f"【实时阵型审计】总量：{count_text}。逐路：{'；'.join(lane_text)}。"]
+        lines = [f"【本回合阵型审计】总量：{count_text}。逐路：{'；'.join(lane_text)}。"]
+        threats = {int(item.get("row", -1)): item for item in observed.get("lane_threats", [])}
+        urgent_rows = sorted(
+            row for row, item in threats.items()
+            if int(item.get("eating_count") or 0) > 0
+            or (item.get("nearest_col") is not None and float(item["nearest_col"]) <= 3)
+        )
+        if urgent_rows:
+            lines.append(f"紧急路线：{urgent_rows}；这些路线先救线，禁止铲植物或清墓碑。")
+
+        sustained_types = {1, 5, 7, 10, 13, 18, 21, 22, 29, 32, 34, 36, 39, 40, 41, 42, 44, 45, 47}
+        sustained_by_row = {
+            row: sum(1 for p in plants if p.get("row") == row and int(p.get("type", -1)) in sustained_types)
+            for row in range(rows)
+        }
+        active_rows = {
+            row for row, item in threats.items() if int(item.get("count") or 0) > 0
+        }
+        uncovered = sorted(row for row in active_rows if sustained_by_row.get(row, 0) == 0)
+        if uncovered:
+            lines.append(f"缺持续输出的来怪路线：{uncovered}；优先补这些路，而不是继续堆已有火力的路线。")
+
+        economy_types = {0, 9}
+        economy_count = sum(1 for p in plants if int(p.get("type", -1)) in economy_types)
+        wave = int(observed.get("game", {}).get("wave") or 0)
+        total_wave = max(1, int(observed.get("game", {}).get("total_wave") or 1))
+        if not urgent_rows and wave <= total_wave // 2 and economy_count < 5:
+            lines.append(f"经济植物仅{economy_count}株：在不耽误缺火力路线的前提下补到约5株。")
+        if counts:
+            dominant_name, dominant_count = counts.most_common(1)[0]
+            if dominant_count >= 6 and dominant_count * 2 > len(plants):
+                lines.append(f"{dominant_name}占比过高（{dominant_count}/{len(plants)}）：本轮优先补缺失职责，不再无目标重复。")
+
+        cards = observed.get("cards", [])
+        ready_replacements = [
+            f"{card.get('index')}:{card.get('name')}"
+            for card in cards
+            if card.get("ready") and int(card.get("actual_type", -1)) in sustained_types
+        ]
+        shovel_candidates = []
+        for plant in plants:
+            row = int(plant.get("row", -1))
+            if (
+                int(plant.get("type", -1)) == 8
+                and row not in urgent_rows
+                and sustained_by_row.get(row, 0) > 0
+            ):
+                shovel_candidates.append([row, int(plant.get("col", -1))])
+        if shovel_candidates and ready_replacements:
+            lines.append(
+                f"可计划替换：小喷菇{shovel_candidates[:3]}；可用持续火力卡{ready_replacements[:3]}。"
+                "仅在阳光与卡片已就绪时铲一个，并在下一回合把同格换上。"
+            )
+
+        recent_actions = observed.get("level_memory", {}).get("recent_actions", [])
+        if recent_actions:
+            last = recent_actions[-1]
+            arguments = last.get("arguments", {})
+            if last.get("action") == "shovel" and last.get("status") not in {"rejected", "failure"}:
+                replacement_index = arguments.get("replacement_card_index")
+                target = [arguments.get("row"), arguments.get("col")]
+                replacement = next((c for c in cards if c.get("index") == replacement_index), None)
+                if replacement and target in replacement.get("legal_targets", []) and replacement.get("ready"):
+                    lines.append(
+                        f"上一轮已为替换铲除{target}：现在优先用卡{replacement_index}:{replacement.get('name')}种回同格，"
+                        "不要留下防线空洞。"
+                    )
+
+        graves = observed.get("decision_board", {}).get("grave_cells", [])
+        grave_buster = next(
+            (card for card in cards if int(card.get("actual_type", -1)) == 11), None
+        )
+        if graves and grave_buster:
+            safe_graves = [cell for cell in graves if int(cell[0]) not in urgent_rows]
+            if safe_graves and grave_buster.get("ready"):
+                ordered = sorted(safe_graves, key=lambda cell: (cell[1], cell[0]))
+                lines.append(f"安全清墓碑候选：{ordered[:3]}（越靠左越优先）；本轮至多清一座。")
         puff = counts.get("小喷菇", 0)
         sun_shroom = counts.get("阳光菇", 0)
-        sustained = sum(counts.get(name, 0) for name in ("大喷菇", "胆小菇", "豌豆射手", "寒冰射手", "双发射手"))
+        sustained = sum(sustained_by_row.values())
         level = int(observed.get("game", {}).get("level") or 0)
         if 11 <= level <= 19:
             lines.append(
@@ -423,7 +519,9 @@ class DeepSeekAgent:
             "never guess or use a missing/empty card index. "
             "Automatic collection is humanized and delayed; do not call collect_items while it is enabled. "
             "occupied_cells is authoritative. Never place a main-layer plant on an occupied main layer. "
-            "If previous_action_feedback reports a rejected action, do not repeat that action at the same coordinates."
+            "For every place_plant, the [row,col] MUST appear in that exact card's legal_targets; an empty legal_targets means do not use it. "
+            "If previous_action_feedback reports a rejected action, "
+            "do not repeat that action at the same coordinates."
         )
         if selection_turn and self.strategy_assist_enabled:
             system += (
@@ -433,6 +531,11 @@ class DeepSeekAgent:
                 "Return action=select_seeds and include a concise selection_reason proving why these exact cards fit this level."
             )
         if self.strategy_assist_enabled:
+            system += (
+                " Use decision_board.shovel_targets for shovel. Shovel only with a ready, affordable replacement card; "
+                "include replacement_card_index, then prioritize planting that card at the same cell next turn if still legal. "
+                "Include a short decision_reason for place_plant or shovel."
+            )
             level_strategy = ""
             if game.get("mode") == 0:
                 level = int(game.get("level") or 0)

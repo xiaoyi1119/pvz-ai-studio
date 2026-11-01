@@ -529,6 +529,7 @@ class PvZCodeInjector:
         if not code_addr:
             raise RuntimeError(f"VirtualAllocEx 失败")
 
+        safe_to_free = True
         try:
             # 写入 shellcode
             written = ctypes.c_size_t(0)
@@ -553,6 +554,11 @@ class PvZCodeInjector:
             # 等待完成
             wait_result = _WaitForSingleObject(thread, timeout_ms)
             if wait_result == WAIT_TIMEOUT:
+                # The remote thread may still be executing.  Freeing its code
+                # page here can crash PvZ a moment later.  Leak this tiny page
+                # for the lifetime of the process and let the caller stop
+                # issuing stale actions instead.
+                safe_to_free = False
                 _CloseHandle(thread)
                 raise RuntimeError("远程线程执行超时")
 
@@ -564,7 +570,8 @@ class PvZCodeInjector:
             return exit_code.value
 
         finally:
-            _VirtualFreeEx(handle, ctypes.c_void_p(code_addr), 0, MEM_RELEASE)
+            if safe_to_free:
+                _VirtualFreeEx(handle, ctypes.c_void_p(code_addr), 0, MEM_RELEASE)
 
     # ------------------------------------------------------------------ #
     #  高层动作接口
