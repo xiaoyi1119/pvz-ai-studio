@@ -130,12 +130,11 @@
       </header>
       <div class="assist-intro">
         <span class="assist-symbol">✦</span>
-        <div><h3>给 AI 补充原版 PVZ 策略知识</h3><p>开启后才会向模型注入策略；关闭时新增提示词完全不生效。</p></div>
+        <div><h3>增强 AI 对原版 PVZ 的游戏理解</h3><p>开启后，AI 会获得经过整理的玩法知识和与当前关卡匹配的建议，让选卡、布阵和临场决策更稳定。</p></div>
       </div>
-      <div class="assist-features">
-        <article><b>整体玩法策略</b><span>补充经济、布阵、资源节奏、植物组合与僵尸克制。</span></article>
-        <article><b>当前关卡短提示</b><span>只注入正在进行的这一关，不携带其他关卡提示。</span></article>
-        <article><b>后台生效</b><span>内容仅进入 AI 请求，不显示在直播战场界面和决策消息中。</span></article>
+      <div class="assist-description">
+        <p>适合希望 AI 更稳健完成冒险关卡的用户。关闭后，AI 将按模型自身的原始能力进行判断。</p>
+        <p><b>评测提示：</b>辅助增强可能提高通关表现，也可能增加少量 Token 消耗。进行“纯模型能力”比赛时，请统一参赛模型的开关状态。</p>
       </div>
       <div class="assist-state"><span>当前状态</span><b id="strategyAssistState">正在读取…</b></div>
       <p id="strategyAssistFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>

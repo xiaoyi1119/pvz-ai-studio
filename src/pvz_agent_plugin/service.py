@@ -93,8 +93,8 @@ def _public_settings() -> dict[str, Any]:
 def _public_strategy_assist() -> dict[str, Any]:
     return {
         "enabled": agent.strategy_assist_enabled,
-        "scope": ["整体玩法策略", "当前冒险关卡短提示"],
-        "visibility": "仅注入 AI 请求，不显示在直播主界面",
+        "name": "辅助增强模式",
+        "description": "增强 AI 对原版 PVZ 的理解与关卡决策稳定性",
     }
 
 
