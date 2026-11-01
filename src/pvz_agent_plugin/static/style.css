@@ -217,10 +217,9 @@ h1 { margin-top: 3px; font-size: 18px; line-height: 1.1; letter-spacing: .01em; 
 .assist-symbol { width: 48px; height: 48px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--accent-2); background: var(--panel-3); box-shadow: 0 0 22px var(--accent-glow); font-size: 23px; }
 .assist-intro h3 { font-size: 13px; }
 .assist-intro p { margin: 5px 0 0; color: #cbd2de; font-size: 9px; line-height: 1.55; }
-.assist-features { display: grid; gap: 7px; margin-bottom: 12px; }
-.assist-features article { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: center; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-3); }
-.assist-features b { color: var(--text); font-size: 10px; }
-.assist-features span { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.assist-description { display: grid; gap: 8px; margin-bottom: 12px; }
+.assist-description p { margin: 0; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--panel-3); font-size: 9px; line-height: 1.65; }
+.assist-description b { color: var(--warn); }
 .assist-state { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: rgba(255,255,255,.02); font-size: 9px; }
 .assist-state b { color: var(--muted); }
 .assist-state b.enabled { color: var(--good); }
