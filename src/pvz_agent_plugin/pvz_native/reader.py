@@ -50,6 +50,7 @@ class SeedInfo:
     initial_cd: int     # mRefreshTime，本次刷新总时长
     is_usable: bool     # mActive；原游戏判断卡片是否激活的权威字段
     imitator_type: int  # 模仿者实际类型 (-1=非模仿者)
+    is_refreshing: bool = False  # mRefreshing；已真正用卡并进入刷新
     x: int = 0          # 卡片横坐标
     y: int = 0          # 卡片纵坐标
     width: int = 0      # 卡片宽度
@@ -429,6 +430,7 @@ class PvZStateReader:
                 initial_cd = self._mem.read_int(card_addr + off.sc_initial_cd)
                 imitator_type = self._mem.read_int(card_addr + off.sc_imitator_type)
                 is_usable = self._mem.read_bool(card_addr + off.sc_usable)
+                is_refreshing = self._mem.read_bool(card_addr + off.sc_refreshing)
                 x = self._mem.read_int(card_addr + off.sc_x)
                 y = self._mem.read_int(card_addr + off.sc_y)
                 width = self._mem.read_int(card_addr + off.sc_width)
@@ -456,6 +458,7 @@ class PvZStateReader:
                 initial_cd=initial_cd,
                 is_usable=is_usable,
                 imitator_type=imitator_type,
+                is_refreshing=is_refreshing,
                 x=x, y=y, width=width, height=height,
             ))
 

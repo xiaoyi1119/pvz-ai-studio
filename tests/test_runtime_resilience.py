@@ -235,6 +235,7 @@ def test_seed_readiness_uses_active_flag_and_reports_true_remaining_time():
     refreshing = SeedInfo(
         index=0, plant_type=8, name="小喷菇", sun_cost=0,
         cd=250, initial_cd=750, is_usable=False, imitator_type=-1,
+        is_refreshing=True,
     )
     assert refreshing.is_ready is False
     assert refreshing.cd_progress == pytest.approx(1 / 3)

@@ -135,7 +135,7 @@ class PvZPlugin:
                 "cooldown_seconds": round(seed.cooldown_remaining / 100, 2),
                 "cooldown": round(seed.cooldown_remaining / 100, 2),
                 "initial_cooldown_cs": seed.initial_cd, "cooldown_progress": round(seed.cd_progress, 3),
-                "usable_flag": seed.is_usable,
+                "usable_flag": seed.is_usable, "refreshing_flag": seed.is_refreshing,
                 "ready": seed.is_ready and (conveyor or state.sun >= seed.sun_cost),
                 "affordable": conveyor or state.sun >= seed.sun_cost,
                 "requires_sun": not conveyor, "imitator_type": seed.imitator_type,
@@ -410,7 +410,7 @@ class PvZPlugin:
             if conveyor:
                 accepted = accepted or after_card_type != seed.plant_type
             else:
-                accepted = accepted or not after_state.seeds[card_index].is_usable
+                accepted = accepted or after_state.seeds[card_index].is_refreshing
             if not conveyor and seed.sun_cost > 0:
                 accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted and interaction == "window_drag":
@@ -434,7 +434,7 @@ class PvZPlugin:
                 if conveyor:
                     accepted = accepted or after_card_type != seed.plant_type
                 else:
-                    accepted = accepted or not after_state.seeds[card_index].is_usable
+                    accepted = accepted or after_state.seeds[card_index].is_refreshing
                 if not conveyor and seed.sun_cost > 0:
                     accepted = accepted or after_state.sun <= state.sun - seed.sun_cost
         if not accepted:
