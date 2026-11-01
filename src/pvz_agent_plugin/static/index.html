@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>PVZ AI Live</title>
-  <link rel="stylesheet" href="/static/style.css?v=10">
+  <link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
   <main class="broadcast-shell">
@@ -19,6 +19,7 @@
         <span id="agentChip" class="status-chip off"><i></i>Agent 已停止</span>
       </div>
       <div class="header-tools">
+        <button id="strategyAssistBtn" class="settings-trigger assist-trigger" type="button" aria-label="打开辅助增强设置"><span>✦</span> 辅助增强</button>
         <button id="settingsBtn" class="settings-trigger" type="button" aria-label="打开连接设置">⚙ 设置</button>
         <div class="theme-switcher" aria-label="配色主题">
           <button class="theme-button active" data-theme="bili"><i></i>红蓝</button>
@@ -121,7 +122,31 @@
       </div>
     </section>
   </dialog>
+  <dialog id="strategyAssistDialog" class="settings-dialog assist-dialog">
+    <section class="settings-card">
+      <header class="settings-head">
+        <div><span class="overline">STRATEGY ASSIST</span><h2>辅助增强模式</h2></div>
+        <button id="closeStrategyAssistBtn" class="settings-close" type="button" aria-label="关闭辅助增强设置">×</button>
+      </header>
+      <div class="assist-intro">
+        <span class="assist-symbol">✦</span>
+        <div><h3>给 AI 补充原版 PVZ 策略知识</h3><p>开启后才会向模型注入策略；关闭时新增提示词完全不生效。</p></div>
+      </div>
+      <div class="assist-features">
+        <article><b>整体玩法策略</b><span>补充经济、布阵、资源节奏、植物组合与僵尸克制。</span></article>
+        <article><b>当前关卡短提示</b><span>只注入正在进行的这一关，不携带其他关卡提示。</span></article>
+        <article><b>后台生效</b><span>内容仅进入 AI 请求，不显示在直播战场界面和决策消息中。</span></article>
+      </div>
+      <div class="assist-state"><span>当前状态</span><b id="strategyAssistState">正在读取…</b></div>
+      <p id="strategyAssistFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
+      <div class="settings-actions">
+        <button id="enableStrategyAssistBtn" class="button primary" type="button">开启并保存</button>
+        <button id="disableStrategyAssistBtn" class="button stop" type="button">关闭增强</button>
+        <button id="cancelStrategyAssistBtn" class="button" type="button">取消</button>
+      </div>
+    </section>
+  </dialog>
   <p id="toast" role="status" aria-live="polite"></p>
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

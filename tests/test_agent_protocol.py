@@ -214,6 +214,7 @@ def test_selection_turn_is_explicitly_decided_by_ai_not_plugin_preset():
         "spawn_plan": [],
     })
     agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent.configure_strategy_assist(True)
     with patch.object(agent._client, "post", fake_post):
         call = agent._request_action(context)
     assert call["seeds"] == [1, 3, 4, 5, 8, 11]
@@ -221,5 +222,42 @@ def test_selection_turn_is_explicitly_decided_by_ai_not_plugin_preset():
     assert "plugin has no preset deck" in system
     assert "Do not mechanically choose the first N" in system
     assert captured["body"]["max_tokens"] == 384
+    agent.close()
+
+
+def test_strategy_assist_is_a_hard_gate_and_only_injects_current_level_hint():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action", "arguments": '{"action":"wait","time":1}'
+        }}]}}]
+    }
+    captured = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(url, **kwargs):
+        captured.append(kwargs["json"]["messages"][0]["content"])
+        return FakeResponse()
+
+    context = json.dumps({
+        "game": {"mode": 0, "level": 11, "level_label": "冒险 2-1"},
+        "flow": {"phase": "battle", "level_label": "冒险 2-1"},
+    })
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    with patch.object(agent._client, "post", fake_post):
+        agent._request_action(context)
+        agent.configure_strategy_assist(True)
+        agent._request_action(context)
+
+    assert "PVZ 辅助增强" not in captured[0]
+    assert "PVZ 辅助增强：整体玩法" in captured[1]
+    assert "【当前关卡：冒险 2-1】" in captured[1]
+    assert "首个夜晚尚无阳光菇" in captured[1]
+    assert "首次泳池关" not in captured[1]
     agent.close()
 
