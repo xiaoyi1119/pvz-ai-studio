@@ -85,11 +85,28 @@ def test_model_discovery_returns_model_ids(monkeypatch):
     assert result == {"models": ["deepseek-flash", "deepseek-v4-pro"]}
 
 
+def test_model_discovery_accepts_top_level_string_list(monkeypatch):
+    response = httpx.Response(200, json=["custom-chat", "custom-reasoner"])
+    monkeypatch.setattr(service.httpx, "get", lambda *args, **kwargs: response)
+
+    result = service.api_settings_models(ModelsRequest(
+        base_url="https://compatible.example/v1", api_key="local-test-key"
+    ))
+
+    assert result == {"models": ["custom-chat", "custom-reasoner"]}
+
+
 def test_model_test_saves_only_after_tool_call(monkeypatch):
     response = httpx.Response(200, json={"choices": [{"message": {"tool_calls": [
         {"function": {"name": "connection_test", "arguments": '{"ok":true}'}}
     ]}}]})
-    monkeypatch.setattr(service.httpx, "post", lambda *args, **kwargs: response)
+    sent = {}
+
+    def fake_post(*args, **kwargs):
+        sent.update(kwargs.get("json") or {})
+        return response
+
+    monkeypatch.setattr(service.httpx, "post", fake_post)
     saved = {}
 
     def fake_save(base_url, api_key, model, goal):
@@ -103,6 +120,34 @@ def test_model_test_saves_only_after_tool_call(monkeypatch):
     ))
     assert result["test"]["ok"] is True
     assert saved["model"] == "deepseek-flash"
+    assert sent["thinking"] == {"type": "disabled"}
+
+
+def test_compatible_model_test_omits_deepseek_extension(monkeypatch):
+    response = httpx.Response(200, json={"choices": [{"message": {"tool_calls": [
+        {"function": {"name": "connection_test", "arguments": '{"ok":true}'}}
+    ]}}]})
+    sent = {}
+
+    def fake_post(*args, **kwargs):
+        sent.update(kwargs.get("json") or {})
+        return response
+
+    monkeypatch.setattr(service.httpx, "post", fake_post)
+    monkeypatch.setattr(service, "_save_settings", lambda base_url, api_key, model, goal: {
+        "base_url": base_url,
+        "model": model,
+        "goal": goal,
+        "api_key_configured": True,
+    })
+
+    result = service.api_settings_test_and_save(SettingsRequest(
+        base_url="https://compatible.example/v1", api_key="local-test-key",
+        model="custom-chat", goal="完成当前关卡",
+    ))
+
+    assert result["test"]["ok"] is True
+    assert "thinking" not in sent
 
 
 def test_profile_name_and_avatar_are_saved_locally(tmp_path, monkeypatch):
@@ -308,6 +353,55 @@ def test_conveyor_card_can_be_planted_with_zero_sun(tmp_path):
     result = plugin.place_plant(0, 2, 4)
     assert result["status"] == "ok"
     assert result["plant_type"] == 3
+
+
+def test_failed_background_plant_never_uses_crash_prone_memory_fallback(tmp_path, monkeypatch):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Memory:
+        def is_connected(self):
+            return True
+
+    class Reader:
+        def read_state(self):
+            return GameState(
+                game_ui=3, game_mode=0, adventure_level=16, scene=1, sun=35,
+                seeds=[_seed(0, 8, cost=0)], plants=[],
+            )
+
+    class Injector:
+        memory_fallback_called = False
+
+        def grid_to_pixel(self, row, col):
+            return 400, 300
+
+        def release_mouse(self):
+            return None
+
+        def window_drag(self, *args, **kwargs):
+            return None
+
+        def mouse_click(self, *args, **kwargs):
+            return None
+
+        def put_plant(self, *args, **kwargs):
+            self.memory_fallback_called = True
+            raise AssertionError("unsafe native fallback must not run")
+
+        def consume_seed_card(self, *args, **kwargs):
+            self.memory_fallback_called = True
+            raise AssertionError("unsafe native fallback must not run")
+
+    injector = Injector()
+    plugin._memory = Memory()
+    plugin._reader = Reader()
+    plugin._injector = injector
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+    with pytest.raises(RuntimeError, match="已禁用可导致闪退"):
+        plugin.place_plant(0, 4, 3)
+
+    assert injector.memory_fallback_called is False
 
 
 def test_state_hides_empty_conveyor_slots_from_ai(tmp_path):

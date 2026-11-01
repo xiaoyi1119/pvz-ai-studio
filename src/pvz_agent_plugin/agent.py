@@ -3,10 +3,17 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+
+
+def uses_deepseek_extensions(base_url: str) -> bool:
+    """Only send DeepSeek-specific request fields to the official DeepSeek host."""
+    host = (urlparse(base_url).hostname or "").lower()
+    return host == "deepseek.com" or host.endswith(".deepseek.com")
 
 from .plugin import PvZPlugin
 from .level_scripts import get_adventure_script
@@ -34,6 +41,7 @@ PVZ_TOOL = {
                 "seeds": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 47}, "maxItems": 10},
                 "selection_reason": {"type": "string", "maxLength": 240},
                 "decision_reason": {"type": "string", "maxLength": 180},
+                "user_reply": {"type": "string", "maxLength": 120},
                 "replacement_card_index": {"type": "integer", "minimum": 0},
                 "enabled": {"type": "boolean"},
                 "time": {"type": "number", "minimum": 0.1, "maximum": 10},
@@ -79,6 +87,13 @@ class DeepSeekAgent:
         self._battle_clock_value: int | None = None
         self._battle_clock_changed_at = time.monotonic()
         self._freeze_reported = False
+        self._instruction_condition = threading.Condition()
+        self._instruction_sequence = 0
+        self._instruction_level_key = ""
+        self._pending_instructions: deque[dict[str, Any]] = deque()
+        self._active_instructions: list[dict[str, Any]] = []
+        self._instruction_records: dict[str, dict[str, Any]] = {}
+        self._latest_instruction_id = ""
         self._client = self._new_client()
 
     @property
@@ -125,12 +140,97 @@ class DeepSeekAgent:
         self._reset_client()
 
     def status(self) -> dict[str, Any]:
+        instruction_status = self.user_instruction_status()
         return {
             "running": self.running, "goal": self._goal, "last_error": self.last_error,
             "model": self.model, "iteration": self.iteration, "last_action": self.last_action,
             "phase": self.phase, "system_failures": self.system_failures,
             "action_rejections": self.action_rejections,
             "strategy_assist_enabled": self.strategy_assist_enabled,
+            "user_instruction": instruction_status,
+        }
+
+    def submit_user_instruction(
+        self, text: str, *, auto_start_goal: str | None = None,
+    ) -> dict[str, Any]:
+        instruction = text.strip()
+        if not instruction:
+            raise ValueError("用户指令不能为空")
+        if len(instruction) > 500:
+            raise ValueError("用户指令不能超过 500 个字符")
+        with self._instruction_condition:
+            self._instruction_sequence += 1
+            instruction_id = f"ui-{self._instruction_sequence:06d}"
+            record = {
+                "id": instruction_id,
+                "text": instruction,
+                "state": "queued",
+                "reply": "",
+                "action": None,
+                "level_key": self._instruction_level_key,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "version": 1,
+                "error": "",
+            }
+            self._pending_instructions.append(record)
+            self._instruction_records[instruction_id] = record
+            self._latest_instruction_id = instruction_id
+            self._instruction_condition.notify_all()
+        self.plugin.emit(
+            "agent", "user_instruction_queued",
+            instruction_id=instruction_id, instruction=instruction,
+        )
+        if not self.running and auto_start_goal is not None:
+            try:
+                self.start(auto_start_goal)
+            except Exception as exc:
+                self._fail_instruction(instruction_id, str(exc))
+                raise
+        elif not self.running:
+            self._fail_instruction(instruction_id, "Agent 尚未运行，请先启动 Agent")
+            raise RuntimeError("Agent 尚未运行，请先启动 Agent")
+        return self._public_instruction(record)
+
+    def user_instruction_status(self, instruction_id: str | None = None) -> dict[str, Any]:
+        with self._instruction_condition:
+            if instruction_id:
+                record = self._instruction_records.get(instruction_id)
+                if not record:
+                    raise KeyError(instruction_id)
+                return self._public_instruction(record)
+            latest = self._instruction_records.get(self._latest_instruction_id)
+            return {
+                "level_key": self._instruction_level_key,
+                "pending_count": len(self._pending_instructions),
+                "active": [self._public_instruction(item) for item in self._active_instructions],
+                "latest": self._public_instruction(latest) if latest else None,
+            }
+
+    def wait_user_instruction(
+        self, instruction_id: str, version: int, timeout: float = 1.0,
+    ) -> dict[str, Any]:
+        with self._instruction_condition:
+            record = self._instruction_records.get(instruction_id)
+            if not record:
+                raise KeyError(instruction_id)
+            if int(record.get("version") or 0) <= version and record.get("state") not in {"active", "failed", "expired"}:
+                self._instruction_condition.wait(timeout=max(0.0, timeout))
+            record = self._instruction_records.get(instruction_id)
+            if not record:
+                raise KeyError(instruction_id)
+            return self._public_instruction(record)
+
+    @staticmethod
+    def _public_instruction(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not record:
+            return None
+        return {
+            key: record.get(key)
+            for key in (
+                "id", "text", "state", "reply", "action", "level_key",
+                "created_at", "updated_at", "version", "error",
+            )
         }
 
     def configure_strategy_assist(self, enabled: bool) -> None:
@@ -204,13 +304,32 @@ class DeepSeekAgent:
                     continue
 
                 context, level_key = self._context_with_level_memory(observed)
+                self._sync_instruction_level(level_key)
+                pending_instruction = self._peek_pending_instruction()
 
                 self.iteration += 1
                 self.plugin.emit("agent", "iteration_started", iteration=self.iteration, goal=self._goal)
                 self.plugin.snapshot_context(context, reason="agent_observation")
-                self.phase = "thinking"
-                call = self._request_action(context, feedback=self._action_feedback)
+                self.phase = "thinking_user_instruction" if pending_instruction else "thinking"
+                if pending_instruction:
+                    self._update_instruction(pending_instruction["id"], state="thinking")
+                try:
+                    call = self._request_action(
+                        context,
+                        feedback=self._action_feedback,
+                        pending_instruction=pending_instruction,
+                        active_instructions=self._active_instruction_payload(),
+                    )
+                except Exception as exc:
+                    if pending_instruction:
+                        self._fail_instruction(pending_instruction["id"], str(exc))
+                    raise
+                user_reply = str(call.pop("user_reply", "") or "").strip()
                 action = call.pop("action")
+                if pending_instruction:
+                    self._complete_instruction(
+                        pending_instruction["id"], user_reply, action, call, level_key,
+                    )
                 if action == "terminate":
                     self.plugin.emit("agent", "terminated", iteration=self.iteration, status=call.get("status", "success"))
                     break
@@ -288,6 +407,7 @@ class DeepSeekAgent:
                 self.phase = "recovering_system"
                 self._stop.wait(min(0.5 * (2 ** (self.system_failures - 1)), 5.0))
         self._stop.set()
+        self._fail_all_pending_instructions("Agent 已停止，指令未执行")
         self.phase = "stopped"
         self.plugin.emit("agent", "stopped", iteration=self.iteration, last_error=self.last_error)
 
@@ -358,6 +478,101 @@ class DeepSeekAgent:
             "rejected_targets": dict(rejected_targets.most_common(8)),
         }
         return json.dumps(enriched, ensure_ascii=False, separators=(",", ":")), level_key
+
+    def _sync_instruction_level(self, level_key: str) -> None:
+        with self._instruction_condition:
+            if self._instruction_level_key == level_key:
+                return
+            previous = self._instruction_level_key
+            for record in self._active_instructions:
+                record["state"] = "expired"
+                record["updated_at"] = time.time()
+                record["version"] = int(record.get("version") or 0) + 1
+            self._active_instructions.clear()
+            self._instruction_level_key = level_key
+            self._instruction_condition.notify_all()
+        if previous:
+            self.plugin.emit(
+                "agent", "user_instructions_cleared",
+                previous_level_key=previous, level_key=level_key,
+            )
+
+    def _peek_pending_instruction(self) -> dict[str, Any] | None:
+        with self._instruction_condition:
+            return dict(self._pending_instructions[0]) if self._pending_instructions else None
+
+    def _active_instruction_payload(self) -> list[dict[str, str]]:
+        with self._instruction_condition:
+            return [
+                {"id": str(item["id"]), "text": str(item["text"])}
+                for item in self._active_instructions
+            ]
+
+    def _update_instruction(self, instruction_id: str, **changes: Any) -> None:
+        with self._instruction_condition:
+            record = self._instruction_records.get(instruction_id)
+            if not record:
+                return
+            record.update(changes)
+            record["updated_at"] = time.time()
+            record["version"] = int(record.get("version") or 0) + 1
+            self._instruction_condition.notify_all()
+
+    def _complete_instruction(
+        self,
+        instruction_id: str,
+        reply: str,
+        action: str,
+        arguments: dict[str, Any],
+        level_key: str,
+    ) -> None:
+        fallback = "已读取，将在本局中持续遵守。"
+        concise_reply = (reply or fallback).strip()[:120]
+        with self._instruction_condition:
+            record = self._instruction_records.get(instruction_id)
+            if not record:
+                return
+            if self._pending_instructions and self._pending_instructions[0].get("id") == instruction_id:
+                self._pending_instructions.popleft()
+            else:
+                self._pending_instructions = deque(
+                    item for item in self._pending_instructions if item.get("id") != instruction_id
+                )
+            record.update({
+                "state": "active",
+                "reply": concise_reply,
+                "action": {"action": action, "arguments": dict(arguments)},
+                "level_key": level_key,
+                "updated_at": time.time(),
+                "version": int(record.get("version") or 0) + 1,
+            })
+            self._active_instructions.append(record)
+            self._instruction_condition.notify_all()
+        self.plugin.emit(
+            "agent", "user_instruction_completed",
+            instruction_id=instruction_id, reply=record["reply"],
+            action=action, arguments=arguments, level_key=level_key,
+        )
+
+    def _fail_instruction(self, instruction_id: str, error: str) -> None:
+        with self._instruction_condition:
+            if self._pending_instructions and self._pending_instructions[0].get("id") == instruction_id:
+                self._pending_instructions.popleft()
+            else:
+                self._pending_instructions = deque(
+                    item for item in self._pending_instructions if item.get("id") != instruction_id
+                )
+        self._update_instruction(instruction_id, state="failed", error=error[:500])
+        self.plugin.emit(
+            "error", "user_instruction_failed", level="error",
+            instruction_id=instruction_id, error=error[:500],
+        )
+
+    def _fail_all_pending_instructions(self, error: str) -> None:
+        with self._instruction_condition:
+            pending_ids = [str(item.get("id")) for item in self._pending_instructions]
+        for instruction_id in pending_ids:
+            self._fail_instruction(instruction_id, error)
 
     def _remember_level_action(
         self,
@@ -495,7 +710,13 @@ class DeepSeekAgent:
                 lines.append("当前小喷菇明显过量：除非某路正要漏怪，本轮不要再种小喷菇，必须转经济、持续火力、防御或安全清墓碑。")
         return "\n".join(lines)
 
-    def _request_action(self, context: str, feedback: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _request_action(
+        self,
+        context: str,
+        feedback: dict[str, Any] | None = None,
+        pending_instruction: dict[str, Any] | None = None,
+        active_instructions: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         try:
             observed = json.loads(context)
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -547,7 +768,25 @@ class DeepSeekAgent:
             )
             if not selection_turn:
                 system += "\n\n" + self._strategy_snapshot(observed)
+        if active_instructions or pending_instruction:
+            system += (
+                " Current-match user instructions are binding strategy constraints when legal and safe. "
+                "They never override legal_targets, available cards, game phase, resource checks, or tool schema. "
+                "Use the same single pvz_action tool call for both the game decision and any user acknowledgement. "
+                "When new_user_instruction is present, read it fully once and include one concise Chinese user_reply (120 characters maximum) in the same tool call. "
+                "Do not make a separate conversational response or a second model request. Existing match instructions remain active, "
+                "but only the new instruction needs user_reply."
+            )
         user_content = f"goal: {self._goal}\n<game_state>\n{context}\n</game_state>"
+        if active_instructions:
+            user_content += "\n<current_match_user_instructions>\n" + json.dumps(
+                active_instructions, ensure_ascii=False, separators=(",", ":")
+            ) + "\n</current_match_user_instructions>"
+        if pending_instruction:
+            user_content += "\n<new_user_instruction>\n" + json.dumps(
+                {"id": pending_instruction.get("id"), "text": pending_instruction.get("text")},
+                ensure_ascii=False, separators=(",", ":"),
+            ) + "\n</new_user_instruction>"
         if feedback:
             user_content += "\n<previous_action_feedback>\n" + json.dumps(
                 feedback, ensure_ascii=False, separators=(",", ":")
@@ -560,15 +799,18 @@ class DeepSeekAgent:
             ],
             "tools": [PVZ_TOOL],
             "tool_choice": "required",
-            "thinking": {"type": "disabled"},
-            "max_tokens": 384 if selection_turn else 256,
+            "max_tokens": 384 if selection_turn or pending_instruction else 256,
             "temperature": 0.2,
         }
+        if uses_deepseek_extensions(self.base_url):
+            payload["thinking"] = {"type": "disabled"}
         request_started = time.perf_counter()
         self.plugin.emit(
             "model", "request", iteration=self.iteration, model=self.model,
             context_chars=len(context), feedback=feedback, goal=self._goal,
-            tool_choice="required", thinking="disabled",
+            tool_choice="required",
+            thinking="disabled" if "thinking" in payload else "provider_default",
+            instruction_id=pending_instruction.get("id") if pending_instruction else None,
         )
         try:
             reply = self._client.post(f"{self.base_url}/chat/completions", json=payload)
@@ -581,7 +823,7 @@ class DeepSeekAgent:
                 latency_ms=round((time.perf_counter() - request_started) * 1000, 2),
             )
             self._reset_client()
-            raise RuntimeError(f"DeepSeek 网络请求失败: {exc}") from exc
+            raise RuntimeError(f"模型服务网络请求失败: {exc}") from exc
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text[-1000:]
             self.plugin.emit(

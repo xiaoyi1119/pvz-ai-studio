@@ -531,56 +531,21 @@ class PvZPlugin:
                     f"传送带没有接受种植动作: {seed.name} → ({row},{col})；"
                     "为防止空槽或卡槽移动造成崩溃，已禁用强制内存种植回退"
                 )
-            # Some localized 1.0.0.1051 builds ignore background window mouse
-            # messages even though memory state and coordinates are valid. Keep
-            # human-like drag/click as the primary path, then use the game's own
-            # planting routine as a resource-constrained reliability fallback.
-            # The UI attempts take time.  Re-read and revalidate immediately
-            # before injection so a level transition cannot turn a valid card
-            # or target into stale memory.
-            with self._lock:
-                assert self._reader
-                current = self._reader.read_state()
-                current_flow = classify_flow(
-                    app_scene=current.game_ui,
-                    game_mode=current.game_mode,
-                    adventure_level=current.adventure_level,
-                    background=current.scene,
-                    seed_chooser_ready=current.seed_chooser_ready,
-                )
-                if current_flow.phase != "battle":
-                    raise RuntimeError("关卡状态已变化，已取消过期的内存种植动作")
-                if card_index not in range(len(current.seeds)):
-                    raise RuntimeError("关卡或卡槽已变化，已取消过期的内存种植动作")
-                current_seed = current.seeds[card_index]
-                current_type = (
-                    current_seed.imitator_type
-                    if current_seed.imitator_type >= 0 else current_seed.plant_type
-                )
-                if current_type != plant_type:
-                    raise RuntimeError("卡槽内容已变化，已取消过期的内存种植动作")
-                current_check = check_placement(
-                    plant_type, row, col, current.plants, current.grid_items
-                )
-                if not current_check.allowed:
-                    raise ValueError(current_check.reason)
+            # Never call PutPlant as a fallback here.  It runs an internal game
+            # routine in a remote thread.  On the localized 1.0.0.1051 build the
+            # routine can wait on the main loop, hit the injector timeout and
+            # terminate the whole game process.  A rejected background input is
+            # recoverable; a crashed game is not.  Let the Agent observe again
+            # and choose another legal action/target instead.
             self.emit(
-                "action", "native_plant_fallback", level="warning",
+                "action", "plant_input_not_accepted", level="warning",
                 action_id=action_id, plant=seed.name, row=row, col=col,
+                safety="native_memory_fallback_disabled",
             )
-            with self._lock:
-                assert self._injector
-                self._injector.put_plant(
-                    row, col, plant_type,
-                    imitater=seed.imitator_type >= 0,
-                    sun_cost=seed.sun_cost,
-                )
-                self._injector.consume_seed_card(card_index, seed.initial_cd)
-            interaction = "native_plant_fallback"
-            time.sleep(0.2)
-            after_state = self._reader.read_state()
-            after = [p for p in after_state.plants if p.row == row and p.col == col]
-            accepted = self._verify_placement(plant_type, row, col, before_types, after)
+            raise RuntimeError(
+                f"游戏未接受种植操作: {seed.name} → ({row},{col})；"
+                "已禁用可导致闪退的强制内存种植，请重新读取状态后换一个合法动作"
+            )
         if not accepted:
             raise RuntimeError(f"游戏未接受种植动作: {seed.name} → ({row},{col})")
         return {

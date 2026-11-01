@@ -55,11 +55,106 @@ def test_nested_deepseek_arguments_are_flattened():
         assert body["tool_choice"] == "required"
         return FakeResponse()
 
-    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent = DeepSeekAgent(FakePlugin(), "https://api.deepseek.com", "secret", "deepseek-flash")
     with patch.object(agent._client, "post", fake_post):
         feedback = {"status": "rejected", "error": "occupied"}
         assert agent._request_action("sun=50", feedback=feedback) == {"action": "wait", "time": 1.0}
     assert "previous_action_feedback" in captured["body"]["messages"][1]["content"]
+    agent.close()
+
+
+def test_openai_compatible_provider_does_not_receive_deepseek_thinking_field():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action", "arguments": json.dumps({"action": "wait", "time": 1}),
+        }}]}}]
+    }
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(_url, **kwargs):
+        assert "thinking" not in kwargs["json"]
+        return FakeResponse()
+
+    agent = DeepSeekAgent(FakePlugin(), "https://openrouter.ai/api/v1", "secret", "provider/model")
+    with patch.object(agent._client, "post", fake_post):
+        assert agent._request_action('{"game":{"in_battle":true}}')["action"] == "wait"
+    agent.close()
+
+
+def test_user_instruction_reply_and_game_action_share_one_model_request():
+    reply = {
+        "choices": [{"message": {"tool_calls": [{"function": {
+            "name": "pvz_action",
+            "arguments": json.dumps({
+                "action": "place_plant",
+                "card_index": 2,
+                "row": 3,
+                "col": 1,
+                "user_reply": "收到，本局会优先守住第 4 路。",
+            }, ensure_ascii=False),
+        }}]}}]
+    }
+    captured = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return reply
+
+    def fake_post(url, **kwargs):
+        captured.append(kwargs["json"])
+        return FakeResponse()
+
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    pending = {"id": "ui-000001", "text": "这局优先守住第 4 路"}
+    with patch.object(agent._client, "post", fake_post):
+        call = agent._request_action(
+            '{"game":{"in_battle":true}}',
+            pending_instruction=pending,
+            active_instructions=[{"id": "ui-old", "text": "本局保留 100 阳光"}],
+        )
+
+    assert len(captured) == 1
+    assert call == {
+        "action": "place_plant", "card_index": 2, "row": 3, "col": 1,
+        "user_reply": "收到，本局会优先守住第 4 路。",
+    }
+    content = captured[0]["messages"][1]["content"]
+    assert "<new_user_instruction>" in content
+    assert "这局优先守住第 4 路" in content
+    assert "<current_match_user_instructions>" in content
+    assert captured[0]["max_tokens"] == 384
+    agent.close()
+
+
+def test_user_instruction_stays_active_only_for_current_level():
+    agent = DeepSeekAgent(FakePlugin(), "https://example.invalid/v1", "secret", "deepseek-flash")
+    agent._sync_instruction_level("adventure:14")
+    with patch.object(agent, "start") as start:
+        record = agent.submit_user_instruction("优先保住中路", auto_start_goal="完成当前关卡")
+    start.assert_called_once_with("完成当前关卡")
+    agent._complete_instruction(
+        record["id"], "收到。", "wait", {"time": 0.5}, "adventure:14",
+    )
+
+    current = agent.user_instruction_status()
+    assert current["active"][0]["text"] == "优先保住中路"
+    assert current["active"][0]["action"] == {
+        "action": "wait", "arguments": {"time": 0.5},
+    }
+
+    agent._sync_instruction_level("adventure:15")
+    changed = agent.user_instruction_status()
+    assert changed["active"] == []
+    assert changed["latest"]["state"] == "expired"
     agent.close()
 
 

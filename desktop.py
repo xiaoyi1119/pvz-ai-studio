@@ -85,9 +85,9 @@ def main() -> int:
 
     webview.create_window(
         "PVZ AI Studio",
-        f"http://127.0.0.1:{port}/?desktop=1&ui=10",
-        width=1180,
-        height=720,
+        f"http://127.0.0.1:{port}/?desktop=1&ui=12",
+        width=1500,
+        height=900,
         min_size=(960, 620),
         resizable=True,
         background_color="#090d12",

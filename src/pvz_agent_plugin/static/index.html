@@ -1,151 +1,252 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="bili">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PVZ AI Live</title>
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>PVZ AI Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
-  <main class="broadcast-shell">
-    <header class="broadcast-header">
-      <div class="channel-brand">
-        <button id="profileBtn" class="avatar-button" type="button" aria-label="修改频道头像和名称"><img id="channelAvatar" src="/static/avatar.jpg" class="avatar" alt="频道头像"></button>
-        <div><span class="overline">PVZ · AI LIVE</span><h1 id="channelName">小盆栽的植物园</h1></div>
+  <a class="skip-link" href="#workspace">跳到主要内容</a>
+
+  <svg class="svg-defs" aria-hidden="true">
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h5m6 0h5M4 12h10m4 0h2M4 18h2m4 0h10"/><circle cx="12" cy="6" r="2"/><circle cx="16" cy="12" r="2"/><circle cx="8" cy="18" r="2"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-4.1 3-6.2 7-6.2s6.4 2.1 7 6.2"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.3 4.3L19.5 6.5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10.5V17M12 7.2v.1"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4 18-7Z"/></symbol>
+    <symbol id="i-mower" viewBox="0 0 40 24"><path d="M6 14h20l4-7h4l-3 9h-5"/><path d="M8 14 5 9h9l3 5"/><circle cx="11" cy="18" r="3"/><circle cx="27" cy="18" r="3"/><path d="M30 7h7"/></symbol>
+  </svg>
+
+  <header class="app-bar">
+    <div class="app-bar__inner">
+      <a class="brand" href="#" aria-label="PVZ AI Studio 首页">
+        <img src="/static/assets/pvz-icon.png" alt="">
+        <span>PVZ AI Studio</span>
+        <span class="version">0.3.2</span>
+      </a>
+
+      <nav class="primary-nav" aria-label="主要导航">
+        <button class="nav-item is-active" type="button" data-view="console" aria-current="page">控制台</button>
+        <button class="nav-item" type="button" data-view="records">运行记录</button>
+        <button class="nav-item" type="button" data-view="diagnostics">诊断</button>
+      </nav>
+
+      <div class="app-actions">
+        <span class="demo-label"><span class="status-dot status-dot--amber" id="appStatusDot"></span><span id="appStatusText">正在连接</span></span>
+        <button class="profile-button" id="profileButton" type="button" aria-haspopup="dialog">
+          <img id="profileAvatar" src="/static/avatar.jpg" alt="">
+          <span>小盆栽的植物园</span>
+        </button>
+        <button class="icon-button" id="settingsButton" type="button" aria-label="打开设置" aria-haspopup="dialog">
+          <svg><use href="#i-settings"/></svg>
+        </button>
       </div>
-      <div class="header-center">
-        <span id="gameChip" class="status-chip off"><i></i>游戏未连接</span>
-        <span id="captureChip" class="status-chip off"><i></i>等待画面</span>
-        <span id="agentChip" class="status-chip off"><i></i>Agent 已停止</span>
-      </div>
-      <div class="header-tools">
-        <button id="strategyAssistBtn" class="settings-trigger assist-trigger" type="button" aria-label="打开辅助增强设置"><span>✦</span> 辅助增强</button>
-        <button id="settingsBtn" class="settings-trigger" type="button" aria-label="打开连接设置">⚙ 设置</button>
-        <div class="theme-switcher" aria-label="配色主题">
-          <button class="theme-button active" data-theme="bili"><i></i>红蓝</button>
-          <button class="theme-button" data-theme="green"><i></i>绿色</button>
+    </div>
+  </header>
+
+  <main id="workspace" class="workspace" data-view-panel="console">
+    <section class="game-panel" aria-labelledby="game-title">
+      <div class="panel-heading">
+        <div>
+          <h1 id="game-title">游戏画面</h1>
+        </div>
+        <div class="heading-actions">
+          <span class="quiet-status"><span class="status-dot status-dot--amber" id="captureDot"></span><span id="captureState">正在读取画面</span></span>
+          <button class="primary-button" id="agentButton" type="button">启动 Agent</button>
         </div>
       </div>
-    </header>
+      <div class="game-frame">
+        <img id="gameStream" src="/api/capture/stream" width="800" height="600" alt="植物大战僵尸实时游戏画面">
+      </div>
+      <div class="game-caption">
+        <span id="levelCaption">等待游戏状态</span>
+        <span id="sceneCaption">—</span>
+        <span id="pauseCaption">—</span>
+      </div>
+    </section>
 
-    <section class="broadcast-grid">
-      <section class="game-column">
-        <article class="game-frame">
-          <div class="frame-head">
-            <div class="live-mark"><i></i>LIVE GAME</div>
-            <div class="scene-meta"><span id="scene">等待游戏</span><time id="clock">00:00</time></div>
-          </div>
-          <div class="game-viewport">
-            <img id="gameFeed" src="/api/capture/stream" alt="植物大战僵尸实时游戏画面">
-            <div id="captureFallback" class="capture-fallback">
-              <span class="capture-icon">◎</span><b>正在连接游戏画面</b>
-              <small>请保持“植物大战僵尸中文版”窗口处于打开状态</small>
-            </div>
-            <div class="video-corners" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-          </div>
-        </article>
-
+    <aside class="inspector" aria-label="游戏与 Agent 状态">
+      <section class="fact-strip" aria-label="对局数据">
+        <div class="fact"><span>阳光</span><strong class="sun" id="sunValue">—</strong></div>
+        <div class="fact"><span>波次</span><strong id="waveValue">—</strong></div>
+        <div class="fact"><span>植物</span><strong id="plantValue">—</strong></div>
+        <div class="fact"><span>僵尸</span><strong id="zombieValue">—</strong></div>
       </section>
 
-      <aside class="intel-panel">
-        <div class="intel-heading">
-          <div><span class="overline">LIVE BATTLE DATA</span><h2>战场情报</h2></div>
-          <span class="live-badge"><i></i>实时同步</span>
+      <section class="lane-section" aria-labelledby="lane-title">
+        <div class="section-heading">
+          <h2 id="lane-title">路线概览</h2>
         </div>
 
-        <section class="overview-grid">
-          <article class="metric-card sun-metric"><span class="metric-title">阳光资源</span><svg class="metric-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M19.8 4.2l-2.1 2.1M6.3 17.7l-2.1 2.1"/></svg><strong id="sun">0</strong><small>SUN ENERGY</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="sunSpark" points="0,28 100,28"/></svg></article>
-          <article class="metric-card wave-metric"><span class="metric-title">当前波次</span><svg class="metric-icon skull-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a7 7 0 1 1 14 0c0 2.5-1.2 4.2-3 5.3V20H8v-3.7C6.2 15.2 5 13.5 5 11Z"/><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M10 16h4M11 16v3M13 16v3"/></svg><strong id="wave">0/0</strong><small id="waveHint">等待关卡</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="waveSpark" points="0,28 100,28"/></svg></article>
-          <article class="metric-card plant-metric"><span class="metric-title">场上植物</span><svg class="metric-icon leaf-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 3.5C12 3.6 6.4 6.8 5.1 12.1c-.7 2.8.7 5.4 3.3 6.4 4.8 1.8 9.5-2.7 12.1-15Z"/><path d="M4 21c2.5-6.1 6.4-9.9 12.2-12.1"/></svg><strong id="plantCount">0</strong><small>PLANTS</small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="plantSpark" points="0,28 100,28"/></svg></article>
-          <article class="metric-card danger-metric"><span class="metric-title">场上僵尸</span><svg class="metric-icon skull-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 11a7 7 0 1 1 14 0c0 2.5-1.2 4.2-3 5.3V20H8v-3.7C6.2 15.2 5 13.5 5 11Z"/><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M10 16h4M11 16v3M13 16v3"/></svg><strong id="zombieCount">0</strong><small>最高威胁：<b id="dangerLane">—</b></small><svg class="metric-spark" viewBox="0 0 100 30" preserveAspectRatio="none"><polyline id="zombieSpark" points="0,28 100,28"/></svg></article>
-        </section>
+        <div class="lane-board" id="laneBoard" role="list" aria-label="草坪路线"></div>
+      </section>
 
-        <section class="lane-card">
-          <div class="section-title"><div><span class="overline">LANE PRESSURE</span><h3>路线威胁</h3></div><span class="risk-legend"><i>高</i>/<i>中</i>/<i>低</i></span></div>
-          <div id="laneThreatList" class="lane-threat-list"></div>
-        </section>
+      <section class="decision-section" aria-labelledby="decision-title">
+        <div class="section-heading section-heading--compact">
+          <h2 id="decision-title">当前操作</h2>
+          <span class="agent-state" id="agentState">已停止</span>
+        </div>
+        <div class="decision-content">
+          <div class="action-line">
+            <span class="action-index">动作</span>
+            <div><strong id="decisionAction">等待下一次状态读取</strong><p id="decisionReason">连接游戏后会显示 Agent 的实际操作。</p></div>
+          </div>
+          <div class="decision-meta">
+            <span id="decisionCode">wait</span>
+            <span id="decisionTarget">目标 —</span>
+            <span id="decisionVerify">未执行</span>
+          </div>
+        </div>
+      </section>
 
-        <section class="decision-card">
-          <div class="section-title"><div><span class="overline">AI DECISION & REASONING</span><h3>AI 实时决策</h3></div><span id="eventCount" class="counter">0</span></div>
-          <div id="events" class="events empty">暂无决策记录</div>
-        </section>
+      <section class="chat-section" aria-labelledby="chat-title">
+        <div class="section-heading section-heading--compact">
+          <h2 id="chat-title">AI 指令</h2>
+        </div>
 
-        <footer class="intel-footer">
-          <div><span>游戏接口：<b id="gameApiState">未连接</b></span><span>Agent：<b id="agentStateText">待机</b></span></div>
-          <div><span class="footer-dot"></span><span>当前模型：<b id="currentModel">—</b></span><span>响应：<b id="modelLatency">—</b></span><span>APM：<b id="actionRate">0</b></span></div>
-        </footer>
-      </aside>
+        <div class="chat-messages" id="chatMessages" role="log" aria-live="polite" aria-relevant="additions">
+          <div class="chat-prompt" id="chatPrompt">
+            <strong>先启动 Agent</strong>
+            <p>运行后可以发送简短的本局指令，AI 会在下一次决策中读取并回复。</p>
+          </div>
+        </div>
+
+        <form class="chat-composer" id="commandForm">
+          <label class="sr-only" for="commandInput">输入给 AI 的本局指令</label>
+          <textarea id="commandInput" rows="1" maxlength="240" placeholder="请先启动 Agent" disabled></textarea>
+          <button type="submit" aria-label="发送指令" disabled><svg><use href="#i-send"/></svg><span>发送</span></button>
+        </form>
+      </section>
+
+      <section class="system-strip" aria-label="系统状态">
+        <div><span>游戏</span><strong id="footerGame">未连接</strong></div>
+        <div><span>Agent</span><strong id="footerAgent">已停止</strong></div>
+        <div><span>模型</span><strong id="footerModel">—</strong></div>
+        <div><span>阶段</span><strong id="footerPhase">—</strong></div>
+      </section>
+    </aside>
+  </main>
+
+  <main class="secondary-view" data-view-panel="records" hidden>
+    <section class="view-surface" aria-labelledby="recordsTitle">
+      <div class="view-heading">
+        <div><h1 id="recordsTitle">运行记录</h1><p>按时间查看 Agent、模型与游戏操作事件。</p></div>
+        <button class="secondary-button" id="refreshRecords" type="button">刷新</button>
+      </div>
+      <div class="record-table-wrap">
+        <table class="record-table">
+          <thead><tr><th>时间</th><th>类别</th><th>事件</th><th>内容</th></tr></thead>
+          <tbody id="recordRows"><tr><td colspan="4" class="empty-cell">正在读取运行记录…</td></tr></tbody>
+        </table>
+      </div>
     </section>
   </main>
-  <dialog id="profileDialog" class="settings-dialog profile-dialog">
-    <section class="settings-card">
-      <header class="settings-head">
-        <div><span class="overline">CHANNEL PROFILE</span><h2>频道资料</h2></div>
-        <button id="closeProfileBtn" class="settings-close" type="button" aria-label="关闭频道资料">×</button>
-      </header>
-      <div class="profile-editor">
-        <img id="profilePreview" src="/static/avatar.jpg" alt="头像预览">
-        <div class="profile-fields">
-          <label>频道名称<input id="profileName" type="text" maxlength="40" autocomplete="off"></label>
-          <label class="avatar-picker">选择新头像<input id="profileAvatarFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
-          <small>支持 PNG、JPEG、WebP，文件不超过 5MB</small>
+
+  <main class="secondary-view" data-view-panel="diagnostics" hidden>
+    <section class="view-surface" aria-labelledby="diagnosticsTitle">
+      <div class="view-heading">
+        <div><h1 id="diagnosticsTitle">诊断</h1><p>检查游戏、画面、Agent 与模型的实际运行状态。</p></div>
+        <button class="secondary-button" id="refreshDiagnostics" type="button">重新检查</button>
+      </div>
+      <div class="diagnostic-list">
+        <div class="diagnostic-row"><div><strong>游戏进程</strong><span>内存插件连接状态</span></div><b id="diagGame">检查中</b></div>
+        <div class="diagnostic-row"><div><strong>游戏画面</strong><span>捕获进程与最新帧</span></div><b id="diagCapture">检查中</b></div>
+        <div class="diagnostic-row"><div><strong>Agent</strong><span>决策循环与当前阶段</span></div><b id="diagAgent">检查中</b></div>
+        <div class="diagnostic-row"><div><strong>模型 API</strong><span>当前配置与最近错误</span></div><b id="diagModel">检查中</b></div>
+      </div>
+      <div class="diagnostic-error" id="diagnosticError" hidden></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog class="modal" id="settingsDialog" aria-labelledby="settings-title">
+    <form method="dialog">
+      <div class="modal-heading">
+        <div><h2 id="settings-title">设置</h2><p>API 密钥只保存在本机，不会显示在界面或日志中。</p></div>
+        <button class="icon-button" value="cancel" aria-label="关闭设置"><svg><use href="#i-close"/></svg></button>
+      </div>
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="设置分类">
+          <button class="is-active" type="button" data-settings-tab="api" aria-selected="true" aria-controls="settings-api">模型与 API</button>
+          <button type="button" data-settings-tab="assist" aria-selected="false" aria-controls="settings-assist">辅助增强</button>
+          <button type="button" data-settings-tab="appearance" aria-selected="false" aria-controls="settings-appearance">外观</button>
+        </nav>
+        <div class="settings-fields settings-panel is-active" id="settings-api" data-settings-panel="api">
+          <label for="provider">API 类型</label>
+          <select id="provider"><option value="deepseek">DeepSeek</option><option value="openrouter">OpenRouter</option><option value="compatible">OpenAI 兼容接口</option></select>
+          <label for="endpoint">接口地址</label>
+          <input id="endpoint" type="url" value="https://api.deepseek.com">
+          <label for="apiKey">API 密钥</label>
+          <input id="apiKey" type="password" placeholder="已配置时可留空" autocomplete="off">
+          <label for="model">模型</label>
+          <div class="field-with-action model-picker"><select id="model" aria-describedby="modelHint"></select><button type="button" id="findModels">获取模型</button></div>
+          <label class="sr-only" for="customModel">自定义模型名称</label>
+          <input id="customModel" type="text" placeholder="输入模型 ID，例如 vendor/model-name" hidden>
+          <p class="field-help" id="modelHint">读取服务端模型列表后再选择；当前已保存的模型不会被自动替换。</p>
+          <label for="agentGoal">默认目标</label>
+          <input id="agentGoal" value="自主完成当前关卡">
+          <p class="field-help">选择 OpenRouter 时可填写其兼容地址并查找可用模型。</p>
+        </div>
+        <div class="settings-panel" id="settings-assist" data-settings-panel="assist" hidden>
+          <div class="setting-row">
+            <div><strong>辅助增强模式</strong><p>向模型注入玩法知识和当前关卡提示。</p></div>
+            <button class="toggle-switch" id="assistToggle" type="button" role="switch" aria-checked="false" aria-label="辅助增强模式"><span></span></button>
+          </div>
+          <div class="setting-row">
+            <div><strong>保留用户指令</strong><p>用户输入的要求在当前对局内持续生效。</p></div>
+            <button class="toggle-switch is-on" type="button" role="switch" aria-checked="true" aria-label="保留用户指令" disabled><span></span></button>
+          </div>
+          <div class="setting-row">
+            <div><strong>关卡结束后清空</strong><p>进入下一关时自动移除上一局的临时指令。</p></div>
+            <button class="toggle-switch is-on" type="button" role="switch" aria-checked="true" aria-label="关卡结束后清空" disabled><span></span></button>
+          </div>
+        </div>
+        <div class="settings-panel" id="settings-appearance" data-settings-panel="appearance" hidden>
+          <div class="setting-group">
+            <strong>界面配色</strong>
+            <div class="theme-options" role="group" aria-label="界面配色">
+              <button class="theme-option is-selected" type="button" data-theme-choice="green" aria-pressed="true"><span class="theme-swatch theme-swatch--green"></span>绿色</button>
+              <button class="theme-option" type="button" data-theme-choice="red-blue" aria-pressed="false"><span class="theme-swatch theme-swatch--red-blue"></span>红蓝</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div><strong>紧凑布局</strong><p>在较小窗口中保留更多游戏画面空间。</p></div>
+            <button class="toggle-switch is-on" type="button" role="switch" aria-checked="true" aria-label="紧凑布局"><span></span></button>
+          </div>
         </div>
       </div>
-      <p id="profileFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
-      <div class="settings-actions">
-        <button id="saveProfileBtn" class="button primary" type="button">保存资料</button>
-        <button id="cancelProfileBtn" class="button" type="button">取消</button>
+      <div class="modal-actions">
+        <button class="secondary-button" value="cancel">取消</button>
+        <button class="primary-button" id="saveSettings" value="default">测试并保存</button>
       </div>
-    </section>
+    </form>
   </dialog>
-  <dialog id="settingsDialog" class="settings-dialog">
-    <section class="settings-card">
-      <header class="settings-head">
-        <div><span class="overline">CONNECTION SETTINGS</span><h2>API 与控制设置</h2></div>
-        <button id="closeSettingsBtn" class="settings-close" type="button" aria-label="关闭设置">×</button>
-      </header>
-      <div class="settings-fields">
-        <label>DeepSeek API 地址<input id="apiBaseUrl" type="url" autocomplete="url" spellcheck="false"></label>
-        <label>模型名称<span class="model-input-row"><input id="apiModel" type="text" autocomplete="off" spellcheck="false"><button id="loadModelsBtn" class="model-load hidden" type="button" aria-label="获取可用模型">＋</button></span></label>
-        <label>API Key<input id="apiKey" type="password" autocomplete="new-password" placeholder="留空则保持现有密钥"></label>
-        <small id="apiKeyStatus" class="key-status">尚未检查本地密钥</small>
-        <div id="modelOptions" class="model-options hidden" aria-live="polite"></div>
-        <label>本轮默认目标<input id="goal" type="text" autocomplete="off"></label>
+
+  <dialog class="modal modal--small" id="profileDialog" aria-labelledby="profile-title">
+    <form method="dialog">
+      <div class="modal-heading">
+        <div><h2 id="profile-title">编辑资料</h2><p>修改软件顶部显示的名称和头像。</p></div>
+        <button class="icon-button" value="cancel" aria-label="关闭资料编辑"><svg><use href="#i-close"/></svg></button>
       </div>
-      <p class="settings-note">API Key 只保存在本机 .env 文件中，界面和状态接口不会回传密钥内容。</p>
-      <p id="settingsFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
-      <div class="settings-actions">
-        <button id="saveSettingsBtn" class="button primary" type="button">测试并保存</button>
-        <button id="saveDirectBtn" class="button" type="button">直接保存并退出</button>
-        <button id="startBtn" class="button primary" type="button">启动 Agent</button>
-        <button id="stopBtn" class="button stop" type="button">停止 Agent</button>
+      <div class="profile-editor">
+        <img id="profilePreview" src="/static/avatar.jpg" alt="当前头像">
+        <div><label for="profileName">显示名称</label><input id="profileName" value="小盆栽的植物园"><input id="avatarFile" type="file" accept="image/png,image/jpeg,image/webp" hidden><button class="secondary-button" type="button" id="avatarDemo">更换头像</button></div>
       </div>
-    </section>
+      <div class="modal-actions">
+        <button class="secondary-button" value="cancel">取消</button>
+        <button class="primary-button" id="saveProfile" value="default">保存资料</button>
+      </div>
+    </form>
   </dialog>
-  <dialog id="strategyAssistDialog" class="settings-dialog assist-dialog">
-    <section class="settings-card">
-      <header class="settings-head">
-        <div><span class="overline">STRATEGY ASSIST</span><h2>辅助增强模式</h2></div>
-        <button id="closeStrategyAssistBtn" class="settings-close" type="button" aria-label="关闭辅助增强设置">×</button>
-      </header>
-      <div class="assist-intro">
-        <span class="assist-symbol">✦</span>
-        <div><h3>增强 AI 对原版 PVZ 的游戏理解</h3><p>开启后，AI 会获得经过整理的玩法知识和与当前关卡匹配的建议，让选卡、布阵和临场决策更稳定。</p></div>
-      </div>
-      <div class="assist-description">
-        <p>适合希望 AI 更稳健完成冒险关卡的用户。关闭后，AI 将按模型自身的原始能力进行判断。</p>
-        <p><b>评测提示：</b>辅助增强可能提高通关表现，也可能增加少量 Token 消耗。进行“纯模型能力”比赛时，请统一参赛模型的开关状态。</p>
-      </div>
-      <div class="assist-state"><span>当前状态</span><b id="strategyAssistState">正在读取…</b></div>
-      <p id="strategyAssistFeedback" class="settings-feedback hidden" role="status" aria-live="polite"></p>
-      <div class="settings-actions">
-        <button id="enableStrategyAssistBtn" class="button primary" type="button">开启并保存</button>
-        <button id="disableStrategyAssistBtn" class="button stop" type="button">关闭增强</button>
-        <button id="cancelStrategyAssistBtn" class="button" type="button">取消</button>
-      </div>
-    </section>
-  </dialog>
-  <p id="toast" role="status" aria-live="polite"></p>
-  <script src="/static/app.js?v=13"></script>
+
+  <script src="/static/app.js?v=14"></script>
 </body>
 </html>

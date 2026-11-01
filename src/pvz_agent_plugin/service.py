@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 import re
 import time
@@ -9,11 +10,12 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .agent import DeepSeekAgent
+from .agent import DeepSeekAgent, uses_deepseek_extensions
 from . import __version__
 from .capture import GameCaptureHub
 from .plugin import PvZPlugin
@@ -45,6 +47,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="PVZ AI Studio", version=__version__, lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8877", "http://localhost:8877"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 class ActionRequest(BaseModel):
@@ -75,6 +83,10 @@ class ProfileRequest(BaseModel):
 
 class StrategyAssistRequest(BaseModel):
     enabled: bool
+
+
+class UserInstructionRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=240)
 
 
 ENV_PATH = Path(".env")
@@ -298,8 +310,19 @@ def api_settings_models(request: ModelsRequest):
     if not response.is_success:
         raise HTTPException(status_code=400, detail=f"获取模型失败：{_api_error(response)}")
     try:
-        models = response.json().get("data", [])
-        model_ids = sorted({item["id"] for item in models if isinstance(item, dict) and item.get("id")})
+        body = response.json()
+        if isinstance(body, dict):
+            models = body.get("data", body.get("models", []))
+        elif isinstance(body, list):
+            models = body
+        else:
+            models = []
+        model_ids: list[str] = []
+        for item in models:
+            model_id = item.get("id") if isinstance(item, dict) else item if isinstance(item, str) else None
+            if model_id and model_id not in model_ids:
+                model_ids.append(str(model_id))
+        model_ids.sort()
     except (ValueError, AttributeError, TypeError) as exc:
         raise HTTPException(status_code=400, detail="API 返回的模型列表格式不正确") from exc
     if not model_ids:
@@ -325,10 +348,11 @@ def api_settings_test_and_save(request: SettingsRequest):
         "messages": [{"role": "user", "content": "Call connection_test with ok=true."}],
         "tools": [test_tool],
         "tool_choice": "required",
-        "thinking": {"type": "disabled"},
         "max_tokens": 64,
         "temperature": 0,
     }
+    if uses_deepseek_extensions(base_url):
+        payload["thinking"] = {"type": "disabled"}
     started = time.perf_counter()
     try:
         response = httpx.post(
@@ -435,6 +459,93 @@ def api_agent_start(request: AgentRequest):
 def api_agent_stop():
     agent.stop()
     return agent.status()
+
+
+@app.get("/api/agent/instructions")
+def api_agent_instructions():
+    return agent.user_instruction_status()
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+@app.post("/api/agent/instructions/stream")
+def api_agent_instruction_stream(request: UserInstructionRequest):
+    record = safe(lambda: agent.submit_user_instruction(
+        request.text, auto_start_goal=settings.agent_goal,
+    ))
+
+    def stream():
+        instruction_id = str(record["id"])
+        version = int(record.get("version") or 0)
+        yield _sse("status", {
+            "id": instruction_id,
+            "state": "queued",
+            "message": "等待 Agent 下一轮决策",
+        })
+        deadline = time.monotonic() + 90.0
+        while time.monotonic() < deadline:
+            try:
+                snapshot = agent.wait_user_instruction(instruction_id, version, timeout=1.0)
+            except KeyError:
+                yield _sse("error", {"id": instruction_id, "message": "指令状态已丢失"})
+                return
+            next_version = int(snapshot.get("version") or 0)
+            if next_version == version:
+                yield ": keep-alive\n\n"
+                continue
+            version = next_version
+            state = str(snapshot.get("state") or "queued")
+            if state in {"queued", "thinking"}:
+                yield _sse("status", {
+                    "id": instruction_id,
+                    "state": state,
+                    "message": "AI 思考中" if state == "thinking" else "等待 Agent 下一轮决策",
+                })
+                continue
+            if state == "active":
+                reply = str(snapshot.get("reply") or "已读取这条指令。")
+                yield _sse("status", {
+                    "id": instruction_id,
+                    "state": "streaming",
+                    "message": "正在回复",
+                })
+                for start in range(0, len(reply), 2):
+                    yield _sse("delta", {
+                        "id": instruction_id,
+                        "text": reply[start:start + 2],
+                    })
+                    time.sleep(0.025)
+                yield _sse("done", {
+                    "id": instruction_id,
+                    "state": state,
+                    "action": snapshot.get("action"),
+                    "level_key": snapshot.get("level_key"),
+                })
+                return
+            if state in {"failed", "expired"}:
+                yield _sse("error", {
+                    "id": instruction_id,
+                    "state": state,
+                    "message": snapshot.get("error") or "指令未能执行",
+                })
+                return
+        yield _sse("error", {
+            "id": instruction_id,
+            "state": "timeout",
+            "message": "等待 Agent 响应超时，指令仍保留在队列中",
+        })
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store, no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 STATIC = Path(__file__).resolve().parent / "static"
