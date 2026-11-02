@@ -23,6 +23,20 @@ def test_agent_wait_can_be_interrupted(tmp_path):
     assert result["interrupted"] is True
 
 
+def test_reward_handoff_never_touches_injector(tmp_path):
+    plugin = PvZPlugin(log_dir=tmp_path)
+
+    class Injector:
+        def __getattr__(self, name):
+            raise AssertionError(f"reward handoff must not call injector.{name}")
+
+    plugin._injector = Injector()
+    result = plugin.advance_reward_flow(10, 27)
+
+    assert result["status"] == "manual_required"
+    assert result["operation"] == "manual_handoff"
+
+
 def test_jpeg_dimension_parser_rejects_missing_sof():
     assert GameCaptureHub._jpeg_dimensions(b"\xff\xd8\xff\xd9") == (0, 0)
 

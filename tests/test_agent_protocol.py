@@ -241,20 +241,18 @@ def test_level_memory_is_scoped_by_level_key():
     agent.close()
 
 
-def test_reward_flow_waits_for_fade_then_uses_local_script():
+def test_reward_flow_never_sends_automatic_input():
     plugin = FakePlugin()
-    plugin.advance_reward_flow = lambda completed_level, step: {
-        "status": "ok", "completed_level": completed_level, "step": step,
-    }
+    plugin.advance_reward_flow = lambda completed_level, step: (_ for _ in ()).throw(
+        AssertionError("reward screens must remain manual")
+    )
     agent = DeepSeekAgent(plugin, "https://example.invalid/v1", "secret", "deepseek-flash")
     agent._last_adventure_level = 10
     flow = {"phase": "reward", "reward_flow": "zombie_note"}
-    with patch("pvz_agent_plugin.agent.time.monotonic", side_effect=[100.0, 104.0]):
-        agent._advance_reward_locally({}, flow)
-        assert agent.last_action is None
-        agent._advance_reward_locally({}, flow)
-    assert agent.last_action["action"] == "advance_reward_flow"
-    assert agent.last_action["arguments"] == {"completed_level": 10, "step": 0}
+    agent._advance_reward_locally({}, flow)
+    agent._advance_reward_locally({}, flow)
+    assert agent.phase == "waiting_reward_manual"
+    assert agent.last_action is None
     agent.close()
 
 

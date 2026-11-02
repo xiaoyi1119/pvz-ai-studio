@@ -271,8 +271,19 @@ class DeepSeekAgent:
                     self._battle_clock_value = None
                     self._battle_clock_changed_at = time.monotonic()
                 if flow.get("phase") == "reward":
-                    self._advance_reward_locally(game, flow)
-                    self._stop.wait(0.35)
+                    completed_level = self._last_adventure_level or int(game.get("level") or 0)
+                    reward_key = f"adventure:{completed_level:02d}:{flow.get('reward_flow', 'next_level')}"
+                    self.phase = "waiting_reward_manual"
+                    self.last_error = ""
+                    if self._reward_key != reward_key:
+                        self._reward_key = reward_key
+                        self.plugin.emit(
+                            "flow", "reward_manual_handoff",
+                            completed_level=completed_level,
+                            reward_flow=flow.get("reward_flow", "next_level"),
+                            reason="奖励领取和下一关切换由玩家手动完成",
+                        )
+                    self._stop.wait(0.5)
                     continue
                 if flow and not flow.get("agent_enabled", False):
                     self._reset_selection_stability()
@@ -435,26 +446,11 @@ class DeepSeekAgent:
         self._selection_ready_since = 0.0
 
     def _advance_reward_locally(self, game: dict[str, Any], flow: dict[str, Any]) -> None:
+        """Retained for compatibility; reward screens are deliberately manual."""
         completed_level = self._last_adventure_level or int(game.get("level") or 0)
-        key = f"adventure:{completed_level:02d}:{flow.get('reward_flow', 'next_level')}"
-        now = time.monotonic()
-        if self._reward_key != key:
-            self._reward_key = key
-            self._reward_step = 0
-            # AwardScreen fades in for 180 ticks; wait before pressing its button.
-            self._reward_next_at = now + 3.5
-        self.phase = f"advancing_reward_{flow.get('reward_flow', 'next_level')}"
-        if now < self._reward_next_at:
-            return
-        result = self.plugin.advance_reward_flow(completed_level, self._reward_step)
-        self.last_action = {
-            "action": "advance_reward_flow",
-            "arguments": {"completed_level": completed_level, "step": self._reward_step},
-            "result": result,
-        }
-        self._reward_step += 1
-        # Modal Almanac/store screens need longer to finish opening before Esc.
-        self._reward_next_at = now + (3.0 if self._reward_step == 1 else 2.0)
+        self.phase = "waiting_reward_manual"
+        self.last_error = ""
+        self._reward_key = f"adventure:{completed_level:02d}:{flow.get('reward_flow', 'next_level')}"
 
     def _context_with_level_memory(self, observed: dict[str, Any]) -> tuple[str, str]:
         flow = observed.get("flow", {})

@@ -640,37 +640,19 @@ class PvZPlugin:
                 "requested_types": seeds, "requested_names": [PLANT_NAMES.get(v, str(v)) for v in seeds]}
 
     def advance_reward_flow(self, completed_level: int, step: int) -> dict[str, Any]:
-        """Advance the award UI using the script for the completed stage.
+        """Return a manual handoff without sending input to the reward screen.
 
-        The primary award button is common to seed packets, notes and trophies.
-        Almanac/store intros are modal and need an Escape on the following step;
-        window messages avoid blocking a remote injected callback.
+        Repeated background clicks can outlive AwardScreen transitions and call
+        stale game UI objects.  Reward collection and next-level navigation are
+        intentionally left to the player, matching the desktop instructions.
         """
-        with self._lock:
-            self._require_connected()
-            assert self._injector
-            script = get_adventure_script(completed_level)
-            modal = script.reward_flow in {"almanac", "store_intro"}
-            if step == 0:
-                self._injector.window_click(402, 522)
-                operation = "click_primary_award_button"
-            elif step == 1 and modal:
-                self._injector.window_escape()
-                operation = "close_modal_followup"
-            elif step >= 1 and script.reward_flow == "zen_tutorial":
-                # The Zen tutorial is a separate non-planting mode.  A blind
-                # sequence could sell or move plants, so transition into it but
-                # deliberately stop the combat Agent there.
-                operation = "zen_tutorial_handoff"
-            else:
-                self._injector.window_click(402, 522)
-                operation = "retry_primary_award_button"
+        script = get_adventure_script(completed_level)
         result = {
-            "status": "ok", "action": "advance_reward_flow",
+            "status": "manual_required", "action": "advance_reward_flow",
             "completed_level": completed_level, "step": step,
-            "reward_flow": script.reward_flow, "operation": operation,
+            "reward_flow": script.reward_flow, "operation": "manual_handoff",
         }
-        self.emit("flow", "reward_step", **result)
+        self.emit("flow", "reward_manual_handoff", **result)
         return result
 
     def collect_items(self, *, action_id: str = "manual") -> dict[str, Any]:
